@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generate OTP</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/web3/1.8.0/web3.min.js"></script>
+    <script src="javascript.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/web3/1.8.0/web3.min.js"></script>
+
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            flex-direction: column;
+        }
+
+        input,
+        button {
+            margin: 10px;
+            padding: 10px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Nhập số điện thoại để nhận OTP</h2>
+    <input type="text" id="phone" placeholder="Nhập số điện thoại" />
+    <p><strong>Chọn phương thức xác thực:</strong></p>
+    <label>
+        <input type="checkbox" id="WhatsApp" onclick="toggleCheck('WhatsApp')"> WhatsApp
+    </label>
+    <label>
+        <input type="checkbox" id="Telegram" onclick="toggleCheck('Telegram')"> Telegram
+    </label>
+
+    <button onclick="sendToSmartContract()">Gửi OTP lên Smart Contract</button>
+    <!-- <button onclick="getOTPAndPhoneNumber()">Lấy OTP và Số điện thoại từ SMC</button>
+    <button onclick="getAllDataFromSmartContract()">Lấy tất cả dữ liệu từ Smart Contract</button> -->
+    <!-- <button onclick="getInfoContract()">Xem Dữ Liệu</button> -->
+    <button onclick="sendToSmartContractWithoutMetaMask()">Test Gửi OTP Không Cần MetaMask</button>
+
+    <h3 id="otpDisplay"></h3>
+    <p><strong>Public Key (Base64):</strong></p>
+    <input type="text" id="publicKeyInput" placeholder="Nhập publicKey" />
+    <button onclick="getHash()">Lấy hash</button>
+    <p><strong>Public Key Base64:</strong> <span id="publicKeyDisplay"></span></p>
+
+
+    <script>
+        const TypeMethod = {
+            WhatsApp: 0,
+            Telegram: 1
+        };
+        let generatedOTP = "";
+
+        const contractAddress = window.env.contractAddress;// Fix lỗi render Go template
+        const contractABI = window.env.contractABI;
+        async function generateOTP() {
+            generatedOTP = Math.floor(100000 + Math.random() * 900000).toString(); // Tạo OTP 6 chữ số
+            document.getElementById('otpDisplay').innerText = "OTP của bạn là: " + generatedOTP;
+        }
+        let selectedMethod = null;
+
+        function toggleCheck(selectedId) {
+            const checkboxes = {
+                WhatsApp: document.getElementById('WhatsApp'),
+                Telegram: document.getElementById('Telegram')
+            };
+
+            // Bỏ chọn tất cả các checkbox
+            Object.values(checkboxes).forEach(checkbox => checkbox.checked = false);
+
+            // Chỉ tick vào checkbox vừa được click
+            checkboxes[selectedId].checked = true;
+            selectedMethod = TypeMethod[selectedId.charAt(0).toUpperCase() + selectedId.slice(1)];
+            console.log("Selected Method:", selectedMethod);
+        }
+
+
+
+        async function getInfoContract() {
+            if (!window.ethereum) {
+                alert("Vui lòng cài đặt MetaMask để tiếp tục!");
+                return;
+            }
+
+            const web3 = new Web3(window.ethereum);
+            await window.ethereum.request({ method: 'eth_requestAccounts' });
+            const contract = new web3.eth.Contract(contractABI, contractAddress);
+
+            const phone = document.getElementById('phone').value;
+            if (!phone) {
+                alert("Vui lòng nhập số điện thoại để lấy OTP.");
+                return;
+            }
+
+            try {
+                const result = await contract.methods.getOTPInfo(phone).call();
+                console.log("Thông tin OTP:", result);
+            } catch (error) {
+                console.error("Lỗi khi lấy OTP từ Smart Contract:", error);
+                alert("Không thể lấy OTP. Kiểm tra lại thông tin.");
+            }
+        }
+
+        async function sendToSmartContract() {
+            if (!window.ethereum) {
+                alert("Vui lòng cài đặt MetaMask để tiếp tục!");
+                return;
+            }
+
+            // This part generates the public key, gets the user's account, etc.
+            // It remains unchanged.
+            const keyPair = await window.crypto.subtle.generateKey(
+                {
+                    name: "RSA-OAEP",
+                    modulusLength: 2048,
+                    publicExponent: new Uint8Array([1, 0, 1]),
+                    hash: "SHA-256",
+                },
+                true,
+                ["encrypt", "decrypt"]
+            );
+            const publicKey = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
+            const publicKeyBase64 = btoa(String.fromCharCode(...new Uint8Array(publicKey)));
+
+            const web3 = new Web3(window.ethereum);
+            await window.ethereum.request({ method: 'eth_requestAccounts' });
+            const accounts = await web3.eth.getAccounts();
+            const userAccount = accounts[0];
+
+            const phone = document.getElementById('phone').value;
+            if (!phone || selectedMethod === null) {
+                alert("Vui lòng nhập số điện thoại và chọn phương thức xác thực.");
+                return;
+            }
+            const contract = new web3.eth.Contract(contractABI, contractAddress);
+
+            // --- Start of Changed Code ---
+            try {
+                console.log("Sending transaction to request authentication...");
+                const verifyInfo = await contract.methods.requestAuthentication(phone, publicKeyBase64, selectedMethod).send({ from: userAccount });
+                console.log("Transaction Receipt:", verifyInfo); // For debugging
+
+                // ✅ CHECK if the event exists before trying to use it
+                if (verifyInfo.events && verifyInfo.events.AuthenticationRequested) {
+                    const eventData = verifyInfo.events.AuthenticationRequested.returnValues;
+                    console.log('event Data:: ', eventData)
+                    const otp = eventData.otp;
+                    console.log('OTP:: ', otp)
+                    const botPhoneNumber = eventData.chatbotPhone;
+                    console.log('botPhoneNumber:: ', botPhoneNumber)
+
+                    // Display the information to the user
+                    alert(`Your OTP is: ${otp}\nPlease send this to our bot: ${botPhoneNumber}`);
+
+                    // Optional: Redirect to Telegram for a better user experience
+
+
+                } else {
+                    // This runs if the event was not found in the expected place
+                    alert("Your OTP request was sent successfully, but we could not retrieve the OTP automatically. Please check your messaging app.");
+                    console.error("The 'AuthenticationRequested' event was not found in the transaction receipt.");
+                }
+
+            } catch (error) {
+                console.error("Lỗi khi gửi OTP lên Smart Contract:", error);
+                alert("Gửi OTP thất bại. Vui lòng kiểm tra console log và thử lại.");
+            }
+            // --- End of Changed Code ---
+        }
+
+        // without metamask
+        async function sendToSmartContractWithoutMetaMask() {
+            if (typeof Web3 === "undefined") {
+                alert("Web3 chưa được tải. Vui lòng kiểm tra lại!");
+                return;
+            }
+
+            const web3 = new Web3("wss://bsc-testnet-rpc.publicnode.com");
+            const privateKey = "712d07d2f0a4435d44063f8c6a52286a9c00e28bd340400951fbd35c3fa5621d";
+            const account = web3.eth.accounts.privateKeyToAccount(privateKey);
+
+            web3.eth.accounts.wallet.add(account);
+            web3.eth.defaultAccount = account.address;
+
+            const contract = new web3.eth.Contract(contractABI, contractAddress);
+
+            const phone = document.getElementById('phone').value.replace(/^[+@]/, '');
+            console.log(phone);
+
+            if (!phone) {
+                alert("Vui lòng nhập số điện thoại trước khi gửi.");
+                return;
+            }
+
+            try {
+                console.log("Gửi giao dịch addBot...");
+                const addBotData = await contract.methods.checkAvailableBot(selectedMethod).call();
+                console.log(addBotData)
+                //**************************************************************************************************************************************************
+                const keyPair = await window.crypto.subtle.generateKey(
+                    {
+                        name: "RSA-OAEP",
+                        modulusLength: 2048, // Độ dài khóa
+                        publicExponent: new Uint8Array([1, 0, 1]), // Giá trị mặc định cho RSA
+                        hash: "SHA-256",
+                    },
+                    true, // Khóa có thể xuất ra hay không
+                    ["encrypt", "decrypt"]
+                );
+
+                // Xuất khóa công khai
+                const publicKey = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
+                const publicKeyBase64 = btoa(String.fromCharCode(...new Uint8Array(publicKey)));
+                document.getElementById("publicKeyDisplay").textContent = publicKeyBase64;
+
+                console.log("Gửi giao dịch requestAuthentication...");
+
+
+                const requestAuthData = contract.methods.requestAuthentication(phone, publicKeyBase64, selectedMethod, addBotData).encodeABI();
+                const txRequestAuth = {
+                    to: contractAddress,
+                    data: requestAuthData,
+                    gas: 2000000,
+                    gasPrice: await web3.eth.getGasPrice(),
+                    from: account.address
+                };
+
+                const signedTxRequestAuth = await web3.eth.accounts.signTransaction(txRequestAuth, privateKey);
+                const receiptRequestAuth = await web3.eth.sendSignedTransaction(signedTxRequestAuth.rawTransaction);
+                console.log("Giao dịch requestAuthentication thành công:", receiptRequestAuth.transactionHash);
+                const eventABI = [
+                    { type: "address", indexed: true, name: "user" },
+                    { type: "uint256", indexed: false, name: "otp" },
+                    { type: "string", indexed: false, name: "chatbotPhone" }, // Correct name
+                    { type: "uint8", indexed: false, name: "typeMethod" }  // Số điện thoại bot
+                ];
+
+                // Lấy log sự kiện từ receipt
+                const log = receiptRequestAuth.logs[0];
+
+                // Giải mã dữ liệu từ log
+                const decodedEvent = web3.eth.abi.decodeLog(eventABI, log.data, log.topics.slice(1));
+
+                alert(`OTP của bạn là: ${decodedEvent.otp}`);
+                // 🔹 **Lấy OTP từ sự kiện `AuthenticationRequested`**
+                const botUsername = addBotData.replace(/^\@/, '');
+                console.log(botUsername)
+                window.location.href = `https://t.me/${botUsername}`;
+
+            } catch (error) {
+                console.error("Lỗi khi gửi giao dịch:", error);
+                alert("Có lỗi xảy ra, vui lòng kiểm tra console log.");
+            }
+
+        }
+        async function getHash() {
+            if (!window.ethereum) {
+                alert("Vui lòng cài đặt MetaMask để tiếp tục!");
+                return;
+            }
+
+            const web3 = new Web3(window.ethereum);
+            await window.ethereum.request({ method: 'eth_requestAccounts' });
+            const contract = new web3.eth.Contract(contractABI, contractAddress);
+
+            const publicKey = document.getElementById('publicKeyInput').value;
+            if (!publicKey) {
+                alert("Vui lòng nhập số điện thoại để lấy OTP.");
+                return;
+            }
+
+            try {
+                const result = await contract.methods.getPublicKeyHash(publicKey).call();
+                console.log("Thông tin hash:", result);
+            } catch (error) {
+                console.error("Lỗi khi lấy OTP từ Smart Contract:", error);
+                alert("Không thể lấy OTP. Kiểm tra lại thông tin.");
+            }
+        }
+    </script>
+</body>
+
+</html>
