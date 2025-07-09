@@ -13,6 +13,7 @@ import (
 
 func HandlerTelegramMessage(contractAddress string, contractABI string, INFURAL_URL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+
 		// --- Phần 1: Đọc và phân tích tin nhắn từ Telegram ---
 		var telegramMessage model.TelegramMessage
 		urlPath := r.URL.Path
@@ -41,7 +42,7 @@ func HandlerTelegramMessage(contractAddress string, contractABI string, INFURAL_
 		}
 
 		// --- Phần 3: Tách OTP và Số Điện Thoại từ tin nhắn ---
-		parts := strings.Split(text, " ")
+		parts := strings.Split(text, "-")
 
 		// Kiểm tra xem tin nhắn có đúng định dạng "<OTP> <Số Điện Thoại>" không
 		if len(parts) != 2 {
@@ -54,10 +55,7 @@ func HandlerTelegramMessage(contractAddress string, contractABI string, INFURAL_
 		otp := parts[0]
 		userPhoneNumber := parts[1]
 
-		// log.Printf("📩 Đang xử lý OTP '%s' cho số điện thoại '%s'...", otp, userPhoneNumber)
-
 		// --- Phần 4: Gửi dữ liệu đã tách đến Smart Contract để xác thực ---
-		// Gọi hàm service.CheckOTP với đúng các tham số đã được xử lý
 		service.CheckOTP(contractAddress, contractABI, INFURAL_URL, userPhoneNumber, otp, botUsername)
 
 		fmt.Fprintf(w, "OK")

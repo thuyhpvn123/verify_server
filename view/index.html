@@ -143,41 +143,39 @@
             }
             const contract = new web3.eth.Contract(contractABI, contractAddress);
 
-            // --- Start of Changed Code ---
             try {
                 console.log("Sending transaction to request authentication...");
                 const verifyInfo = await contract.methods.requestAuthentication(phone, publicKeyBase64, selectedMethod).send({ from: userAccount });
-                console.log("Transaction Receipt:", verifyInfo); // For debugging
+                console.log("Transaction Receipt:", verifyInfo);
 
-                // ✅ CHECK if the event exists before trying to use it
                 if (verifyInfo.events && verifyInfo.events.AuthenticationRequested) {
                     const eventData = verifyInfo.events.AuthenticationRequested.returnValues;
-                    console.log('event Data:: ', eventData)
                     const otp = eventData.otp;
-                    console.log('OTP:: ', otp)
                     const botPhoneNumber = eventData.chatbotPhone;
-                    console.log('botPhoneNumber:: ', botPhoneNumber)
 
-                    // Display the information to the user
                     alert(`Your OTP is: ${otp}\nPlease send this to our bot: ${botPhoneNumber}`);
-
-                    // Optional: Redirect to Telegram for a better user experience
-
-
                 } else {
-                    // This runs if the event was not found in the expected place
                     alert("Your OTP request was sent successfully, but we could not retrieve the OTP automatically. Please check your messaging app.");
                     console.error("The 'AuthenticationRequested' event was not found in the transaction receipt.");
                 }
 
             } catch (error) {
-                console.error("Lỗi khi gửi OTP lên Smart Contract:", error);
-                alert("Gửi OTP thất bại. Vui lòng kiểm tra console log và thử lại.");
+                // Check if the error is due to the user rejecting the transaction in MetaMask
+                // This is a more reliable way to catch the specific user rejection error.
+                if (error.message && error.message.includes("User denied transaction signature")) {
+                    // User rejected the transaction, so we do nothing and just log it to the console.
+                    console.log("Transaction rejected by user.");
+                } else {
+                    // For any other kind of error, we show the alert.
+                    console.error("Lỗi khi gửi OTP lên Smart Contract:", error);
+                    alert("Gửi OTP thất bại. Vui lòng kiểm tra console log và thử lại.");
+                }
             }
-            // --- End of Changed Code ---
         }
 
         // without metamask
+        // file: view/index.html
+
         async function sendToSmartContractWithoutMetaMask() {
             if (typeof Web3 === "undefined") {
                 alert("Web3 chưa được tải. Vui lòng kiểm tra lại!");
@@ -194,74 +192,104 @@
             const contract = new web3.eth.Contract(contractABI, contractAddress);
 
             const phone = document.getElementById('phone').value.replace(/^[+@]/, '');
-            console.log(phone);
-
-            if (!phone) {
-                alert("Vui lòng nhập số điện thoại trước khi gửi.");
+            if (!phone || selectedMethod === null) {
+                alert("Vui lòng nhập số điện thoại và chọn phương thức xác thực.");
                 return;
             }
 
             try {
-                console.log("Gửi giao dịch addBot...");
-                const addBotData = await contract.methods.checkAvailableBot(selectedMethod).call();
-                console.log(addBotData)
-                //**************************************************************************************************************************************************
-                const keyPair = await window.crypto.subtle.generateKey(
-                    {
-                        name: "RSA-OAEP",
-                        modulusLength: 2048, // Độ dài khóa
-                        publicExponent: new Uint8Array([1, 0, 1]), // Giá trị mặc định cho RSA
-                        hash: "SHA-256",
-                    },
-                    true, // Khóa có thể xuất ra hay không
-                    ["encrypt", "decrypt"]
-                );
-
-                // Xuất khóa công khai
+                const keyPair = await window.crypto.subtle.generateKey({
+                    name: "RSA-OAEP",
+                    modulusLength: 2048,
+                    publicExponent: new Uint8Array([1, 0, 1]),
+                    hash: "SHA-256",
+                }, true, ["encrypt", "decrypt"]);
                 const publicKey = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
                 const publicKeyBase64 = btoa(String.fromCharCode(...new Uint8Array(publicKey)));
                 document.getElementById("publicKeyDisplay").textContent = publicKeyBase64;
 
                 console.log("Gửi giao dịch requestAuthentication...");
 
+                // --- START: ROBUST NONCE AND GAS HANDLING ---
 
-                const requestAuthData = contract.methods.requestAuthentication(phone, publicKeyBase64, selectedMethod, addBotData).encodeABI();
+                // 1. Manually get the pending nonce for the account. This is the key fix.
+                const nonce = await web3.eth.getTransactionCount(account.address, 'pending');
+
+                // 2. Get the current gas price.
+                const currentGasPrice = await web3.eth.getGasPrice();
+
+                // 3. Increase gas price by 20% as a fallback to prevent "underpriced" errors.
+                const higherGasPrice = (BigInt(currentGasPrice) * 120n) / 100n;
+
+                // --- END: ROBUST NONCE AND GAS HANDLING ---
+
+                const requestAuthData = contract.methods.requestAuthentication(phone, publicKeyBase64, selectedMethod).encodeABI();
+
                 const txRequestAuth = {
                     to: contractAddress,
                     data: requestAuthData,
-                    gas: 2000000,
-                    gasPrice: await web3.eth.getGasPrice(),
-                    from: account.address
+                    gas: 500000,
+                    gasPrice: higherGasPrice.toString(),
+                    nonce: nonce // Use the manually fetched nonce
                 };
 
                 const signedTxRequestAuth = await web3.eth.accounts.signTransaction(txRequestAuth, privateKey);
                 const receiptRequestAuth = await web3.eth.sendSignedTransaction(signedTxRequestAuth.rawTransaction);
                 console.log("Giao dịch requestAuthentication thành công:", receiptRequestAuth.transactionHash);
-                const eventABI = [
-                    { type: "address", indexed: true, name: "user" },
-                    { type: "uint256", indexed: false, name: "otp" },
-                    { type: "string", indexed: false, name: "chatbotPhone" }, // Correct name
-                    { type: "uint8", indexed: false, name: "typeMethod" }  // Số điện thoại bot
-                ];
 
-                // Lấy log sự kiện từ receipt
+                const eventABI = [{
+                    type: "address",
+                    indexed: true,
+                    name: "user"
+                }, {
+                    type: "uint256",
+                    indexed: false,
+                    name: "otp"
+                }, {
+                    type: "string",
+                    indexed: false,
+                    name: "chatbotPhone"
+                }, {
+                    type: "uint8",
+                    indexed: false,
+                    name: "typeMethod"
+                }];
+
                 const log = receiptRequestAuth.logs[0];
-
-                // Giải mã dữ liệu từ log
                 const decodedEvent = web3.eth.abi.decodeLog(eventABI, log.data, log.topics.slice(1));
 
-                alert(`OTP của bạn là: ${decodedEvent.otp}`);
-                // 🔹 **Lấy OTP từ sự kiện `AuthenticationRequested`**
-                const botUsername = addBotData.replace(/^\@/, '');
-                console.log(botUsername)
-                window.location.href = `https://t.me/${botUsername}`;
+                const otp = decodedEvent.otp;
+                const botUsernameRaw = decodedEvent.chatbotPhone;
+                const userPhoneNumber = document.getElementById('phone').value.replace(/^[+@]/, '');
+
+                // Check if the method is Telegram (typeMethod == 1)
+                if (decodedEvent.typeMethod == 1) {
+                    // 1. Format the message string
+                    const messageToSend = `${otp}-${userPhoneNumber}`;
+
+                    // 2. Clean up the bot username
+                    const botUsername = botUsernameRaw.replace(/^@/, '');
+
+                    // 3. URL-encode the message to handle any special characters
+                    const encodedMessage = encodeURIComponent(messageToSend);
+
+                    // 4. Create the special Telegram URL
+                    const telegramUrl = `https://t.me/${botUsername}?text=${encodedMessage}`;
+
+                    // 5. Inform the user and redirect them
+                    alert(`Sẽ chuyển hướng đến Telegram để gửi tin nhắn: "${messageToSend}"`);
+                    window.location.href = telegramUrl;
+                } else {
+                    // Fallback for other methods like WhatsApp or if something goes wrong
+                    alert(`OTP của bạn là: ${otp}\nVui lòng gửi đến bot: ${botUsernameRaw}`);
+                }
 
             } catch (error) {
                 console.error("Lỗi khi gửi giao dịch:", error);
                 alert("Có lỗi xảy ra, vui lòng kiểm tra console log.");
             }
-
         }
+
         async function getHash() {
             if (!window.ethereum) {
                 alert("Vui lòng cài đặt MetaMask để tiếp tục!");

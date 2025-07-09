@@ -1,0 +1,12 @@
+# curl -F "url=https://<URL_NGROK_CUA_BẠN>/webhook/telegram/@<TEN_BOT_CUA_BAN>" "<https://api.telegram.org/bot><TOKEN_BOT_CUA_BAN>/setWebhook"
+
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong_bot" "https://api.telegram.org/bot7708592473:AAFrmYxLBhRdFPZ5BaWxXNKwbP9uvCw6egw/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong1_bot" "https://api.telegram.org/bot8009719574:AAE2La5Z4qTZ0dYmTNMw16uA0wx6-Jv2gkg/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong2_bot" "https://api.telegram.org/bot8024328538:AAGwCBQSusebHE-DzpmkNrQ-ZXOWghQINtU/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong3_bot" "https://api.telegram.org/bot8143866430:AAGnmdC9jONocOp_qxgDM-LYoWhC0tUP7nM/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong4_bot" "https://api.telegram.org/bot7717170674:AAH1751v8qV027BK-8NNpp4v4SmhLHG3zoY/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong5_bot" "https://api.telegram.org/bot7313580955:AAH_ulR4VPl1I_hjU4qf3h-2bjwKIDa38qA/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong6_bot" "https://api.telegram.org/bot7733113619:AAGclkqQfhWrmxWTnpnkT6qrzzMPStV_F_g/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong7_bot" "https://api.telegram.org/bot7486701538:AAHgOz7qk9VegZIczSJ0ra7v9K9Mywg0-8s/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong8_bot" "https://api.telegram.org/bot8130174069:AAECcpqc7U6ChZi9z924_GsivPRfVelJFpU/setWebhook"
+curl -F "url=https://cf772f6badb8.ngrok-free.app/webhook/telegram/@OTPCong9_bot" "https://api.telegram.org/bot7646799047:AAFRmJVnLlR4UB4hki_CveDLG49Hq6k2IjU/setWebhook"

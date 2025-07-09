@@ -1,5 +1,5 @@
 window.env = {
-  contractAddress: "0x4A1eB163F7Ff92aA4466673A6837EbB0BBaa13b7",
+  contractAddress: "0xCc3049c411106398d22bd23869796500a0d14B84",
   contractABI: [
     {
       inputs: [

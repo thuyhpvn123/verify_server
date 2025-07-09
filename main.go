@@ -2,7 +2,7 @@ package main
 
 import (
 	"WhatsappVerifyOTP/handler"
-	"WhatsappVerifyOTP/model"
+	// "WhatsappVerifyOTP/model"
 	"fmt"
 	"log"
 	"net/http"
@@ -56,9 +56,12 @@ func main() {
 
 	// http.HandleFunc("/webhook/whatsapp", verifyWebhook)
 	// http.HandleFunc("/webhook/whatsapp", handler.ReceiveMessageWhatsapp(contractAddress, contractABI, infuraURL))
-	http.HandleFunc("/received/message", handler.GetMessageTwilio(contractAddress, contractABI, infuraURL, model.WhatsApp.Int()))
-	http.HandleFunc("/received/telegram/message/@OTPCong_bot", handler.HandlerTelegramMessage(contractAddress, contractABI, infuraURL))
-	http.HandleFunc("/received/telegram/message/@OTPLocNguyen_2_Bot", handler.HandlerTelegramMessage(contractAddress, contractABI, infuraURL))
+	// http.HandleFunc("/received/message", handler.GetMessageTwilio(contractAddress, contractABI, infuraURL, model.WhatsApp.Int()))
+
+	// http.HandleFunc("/received/telegram/message/@OTPCong_bot", handler.HandlerTelegramMessage(contractAddress, contractABI, infuraURL))
+	// http.HandleFunc("/received/telegram/message/@OTPLocNguyen_2_Bot", handler.HandlerTelegramMessage(contractAddress, contractABI, infuraURL))
+
+	http.HandleFunc("/webhook/telegram/", handler.HandlerTelegramMessage(contractAddress, contractABI, infuraURL))
 
 	http.ListenAndServe(":8080", nil)
 }
