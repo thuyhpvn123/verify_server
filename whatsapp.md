@@ -11,17 +11,25 @@ WhatsApp Business API cho phép doanh nghiệp giao tiếp với khách hàng qu
 Trước khi bắt đầu, cần chuẩn bị:
 
 - Tài khoản Facebook Developer.
+- Một Facebook Business profile
 - Một ứng dụng Facebook được liên kết với WhatsApp Business API.
 - Máy chủ để lắng nghe các webhook từ WhatsApp (có thể là máy chủ bất kỳ có thể kết nối internet).
 - Token truy cập API từ Facebook Developer.
 
 ## 3. Chuẩn bị
 
-Để bắt đầu, cần tạo tài khoản Facebook Developer và một ứng dụng WhatsApp:
+Để bắt đầu, cần tạo tài khoản Facebook Developer, Facebook business profile và một ứng dụng WhatsApp:
 
-1. Truy cập: [https://developers.facebook.com/apps/create/](https://deGoelopers.facebook.com/apps/create/).
-2. Tạo một ứng dụng mới và chọn loại **Business**.
-3. Sau khi tạo, sẽ có **App ID** và **App Secret**. Thông tin này sẽ được sử dụng để cấu hình kết nối với WhatsApp API.
+### Lưu ý
+Bạn cần một tài khoản Facebook chưa vi phạm các chính sách của Facebook để  có thể tạo được Facebook Business profile truy cập đường link này để check tài khoản facebook của bạn có bị vi phạm hay ko [https://www.facebook.com/accountquality/](https://www.facebook.com/accountquality/).
+Nếu tài khoản của bạn bị thông báo đã vi phạm các chính sách của Facebook thì hãy sử dụng một tài khoản facebook khác để đăng kí Facebook business profile.
+
+1. Truy cập: [https://business.facebook.com/business/loginpage/?login_options[0]=FB&login_options[1]=IG&login_options[2]=SSO&config_ref=biz_login_tool_flavor_mbs&create_business_portfolio_for_bm=1](https://business.facebook.com/business/loginpage/?login_options[0]=FB&login_options[1]=IG&login_options[2]=SSO&config_ref=biz_login_tool_flavor_mbs&create_business_portfolio_for_bm=1)
+2. Tạo một Facebook Business profile bằng tài khoản Facebook hiện có của bạn
+
+3. Truy cập: [https://developers.facebook.com/apps/create/](https://deGoelopers.facebook.com/apps/create/).
+4. Tạo một ứng dụng mới và chọn loại **Business**.
+5. Sau khi tạo, sẽ có **App ID** và **App Secret**. Thông tin này sẽ được sử dụng để cấu hình kết nối với WhatsApp API.
 
 ## 4. Đăng ký WhatsApp Business API
 
@@ -39,8 +47,19 @@ Webhook sẽ cho phép ứng dụng của nhận tin nhắn từ người dùng 
 
 1. Truy cập **Webhooks** trên trang quản lý ứng dụng Facebook Developer.
 2. Cung cấp URL của server Webhook (ví dụ: `https://your-server.com/webhook`).
-3. Xác thực webhook bằng cách cung cấp `verify_token` mà đã chọn.
-4. Chọn các loại sự kiện muốn nhận, bao gồm tin nhắn WhatsApp và thông báo trạng thái.
+
+3. Xác thực webhook bằng cách cung cấp `verify_token` mà bạn tạo.
+
+### Lưu ý
+    verify_token sẽ được dùng làm biến môi trường để  giao tiếp với webhooks
+    
+4. cài đặt URL end point để lắng nghe
+    - Ví dụ bạn chạy server ngrok có địa chỉ như sau `https://d6b1d60aeee4.ngrok-free.app`
+    - thì cài đặt là `https://d6b1d60aeee4.ngrok-free.app/webhook/whatsapp`
+
+5. sau khi thiết lập xong cấu hình webhook bạn chọn **WhatSapp Business Account** trong seclect box mục sản phẩm
+
+6. Kéo xuống tìm message bấm đăng ký để có thể gửi nhận tin nhắn từ Whatsapp 
 
 ### Bước 2: Xác thực webhook
 
