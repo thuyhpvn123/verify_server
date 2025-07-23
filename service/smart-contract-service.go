@@ -121,6 +121,11 @@ func CallCompleteAuthentication(client *ethclient.Client, parsedABI abi.ABI, con
 		return
 	}
 
+	err = saveEncryptedDataToLog(userWalletAddress.Hex(), phoneNumber, encryptedMessageBase64, encryptedAESKeyBase64)
+	if err != nil {
+		log.Printf("Can not write file into folder log")
+	}
+
 	privateKey, err := crypto.HexToECDSA(privateKeyHex)
 	if err != nil {
 		log.Printf("❌ Step 4: Error loading private key: %v", err)

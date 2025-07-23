@@ -7,3 +7,4 @@ private_keys.txt
 abi.json
 .env
 run.sh
+log/
