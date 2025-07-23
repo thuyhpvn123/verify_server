@@ -209,6 +209,5 @@ func saveEncryptedDataToLog(userWalletAddress, phoneNumber, encryptedMessage, en
 		return fmt.Errorf("failed to write to log file: %w", err)
 	}
 
-	log.Printf("✅ Encrypted data saved to log file: %s", filePath)
 	return nil
 }
