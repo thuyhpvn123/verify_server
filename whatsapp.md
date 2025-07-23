@@ -2,10 +2,7 @@
 
 Hướng dẫn cách đăng ký, cấu hình và triển khai bot sử dụng WhatsApp Business API với Webhook.
 
-## 1. Giới thiệu
-
-WhatsApp Business API cho phép doanh nghiệp giao tiếp với khách hàng qua WhatsApp một cách tự động và hiệu quả. có thể sử dụng API để gửi tin nhắn, nhận phản hồi và quản lý hội thoại từ khách hàng thông qua webhook.
-
+en
 ## 2. Yêu cầu hệ thống
 
 Trước khi bắt đầu, cần chuẩn bị:

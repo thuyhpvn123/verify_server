@@ -1,4 +1,4 @@
-package untils
+package utils
 
 import (
 	"crypto/aes"
@@ -8,10 +8,8 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 )
 
@@ -35,8 +33,9 @@ func formatPEMKey(key string) string {
 
 	return header + formattedKey.String() + footer
 }
-func EncryptData(publicKeyPEM string, data []byte) (string, string, error) {
-	formatPublicKeyPen := formatPEMKey(publicKeyPEM)
+
+// EncryptData mã hóa dữ liệu bằng AES và mã hóa khóa AES bằng RSA
+func EncryptData(publicKeyHex string, data []byte) (string, string, error) {
 	// Tạo khóa AES ngẫu nhiên 32 byte (AES-256)
 	aesKey := make([]byte, 32)
 	if _, err := rand.Read(aesKey); err != nil {
@@ -49,8 +48,8 @@ func EncryptData(publicKeyPEM string, data []byte) (string, string, error) {
 		return "", "", err
 	}
 
-	// Mã hóa khóa AES bằng RSA
-	encryptedAESKey, err := encryptRSA(formatPublicKeyPen, aesKey)
+	// Mã hóa khóa AES bằng RSA, truyền vào chuỗi hex public key
+	encryptedAESKey, err := encryptRSA(publicKeyHex, aesKey)
 	if err != nil {
 		return "", "", err
 	}
@@ -58,6 +57,7 @@ func EncryptData(publicKeyPEM string, data []byte) (string, string, error) {
 	// Trả về dữ liệu mã hóa và khóa AES mã hóa dưới dạng base64
 	return base64.StdEncoding.EncodeToString(encryptedData), base64.StdEncoding.EncodeToString(encryptedAESKey), nil
 }
+
 func encryptAES(plainText []byte, key []byte) ([]byte, []byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -75,24 +75,27 @@ func encryptAES(plainText []byte, key []byte) ([]byte, []byte, error) {
 
 	return ciphertext, iv, nil
 }
-func encryptRSA(publicKeyPEM string, aesKey []byte) ([]byte, error) {
 
-	block, error := pem.Decode([]byte(publicKeyPEM))
-	fmt.Println(publicKeyPEM)
-	if block == nil {
-		log.Fatalf("Không thể decode public key: %v", error)
-
-	}
-
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+// Sửa lại hàm encryptRSA để xử lý chuỗi hex
+func encryptRSA(publicKeyBase64 string, aesKey []byte) ([]byte, error) {
+	// 1. Giải mã chuỗi public key từ Base64 về dạng byte
+	derBytes, err := base64.StdEncoding.DecodeString(publicKeyBase64)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("không thể giải mã base64 public key: %v", err)
 	}
 
+	// 2. Parse các byte (định dạng DER) để lấy public key
+	pub, err := x509.ParsePKIXPublicKey(derBytes)
+	if err != nil {
+		return nil, fmt.Errorf("không thể parse PKIX public key: %v", err)
+	}
+
+	// 3. Chuyển đổi sang dạng RSA public key
 	rsaPub, ok := pub.(*rsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("Không phải RSA public key")
+		return nil, fmt.Errorf("key không phải là RSA public key")
 	}
 
+	// 4. Mã hóa khóa AES bằng RSA public key
 	return rsa.EncryptOAEP(sha256.New(), rand.Reader, rsaPub, aesKey, nil)
 }

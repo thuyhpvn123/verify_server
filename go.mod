@@ -1,4 +1,4 @@
-module WhatsappVerifyOTP
+module verify_server
 
 go 1.24.1
 

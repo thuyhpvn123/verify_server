@@ -1,12 +1,12 @@
 package main
 
 import (
-	"WhatsappVerifyOTP/handler"
-	// "WhatsappVerifyOTP/model"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"verify_server/handler"
+	"verify_server/model"
 
 	"github.com/joho/godotenv"
 )
@@ -38,11 +38,12 @@ func main() {
 		log.Printf("lỗi khi tải tệp .env: %v", err)
 	}
 	// var method model.MessagingMethod = model.Telegram
-	// fmt.Println("Selected messaging method:", model.WhatsApp.Int())
+	fmt.Println("Selected messaging method:", model.WhatsApp.Int())
 	infuraURL := os.Getenv("INFURA_URL")
 	contractAddress := os.Getenv("CONTRACT_ADDRESS")
 	contractABI := os.Getenv("CONTRACT_ABI")
 	fmt.Println("Server is running on port: 8080 ,")
+
 	http.HandleFunc("/webhook/whatsapp", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			verifyWebhook(w, r) // Xác thực Webhook từ Meta

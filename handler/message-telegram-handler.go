@@ -1,14 +1,14 @@
 package handler
 
 import (
-	"WhatsappVerifyOTP/model"
-	"WhatsappVerifyOTP/service"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+	"verify_server/model"
+	"verify_server/service"
 )
 
 func HandlerTelegramMessage(contractAddress string, contractABI string, INFURAL_URL string) http.HandlerFunc {
@@ -44,7 +44,7 @@ func HandlerTelegramMessage(contractAddress string, contractABI string, INFURAL_
 		// --- Phần 3: Tách OTP và Số Điện Thoại từ tin nhắn ---
 		parts := strings.Split(text, "-")
 
-		// Kiểm tra xem tin nhắn có đúng định dạng "<OTP> <Số Điện Thoại>" không
+		// Kiểm tra xem tin nhắn có đúng định dạng "<OTP>-<Số Điện Thoại>" không
 		if len(parts) != 2 {
 			log.Printf("⚠️ Sai định dạng tin nhắn từ Chat ID %d. Mong muốn: '<OTP>-<SĐT>', Nhận được: '%s'", telegramMessage.Message.Chat.ID, text)
 			fmt.Fprintf(w, "OK")

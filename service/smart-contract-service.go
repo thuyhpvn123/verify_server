@@ -1,176 +1,209 @@
 package service
 
 import (
-	"WhatsappVerifyOTP/model"
-	"WhatsappVerifyOTP/untils"
 	"context"
 	"crypto/ecdsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
+	"verify_server/utils" // Ensure your utils package is correctly named 'utils'
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/ethereum/go-ethereum/ethclient"
+	// No longer need "github.com/ethereum/go-ethereum/rpc"
 )
 
+type LogData struct {
+	UserWalletAddress      string `json:"userWalletAddress"`
+	PhoneNumber            string `json:"phoneNumber"`
+	EncryptedMessageBase64 string `json:"encryptedMessage"`
+	EncryptedAESKeyBase64  string `json:"encryptedSecretKey"`
+	Timestamp              string `json:"timestamp"`
+}
+type ValidateOTPResult struct {
+	PublicKey string
+	Wallet    common.Address
+}
+
 func CheckOTP(contractAddress string, contractABI string, INFURA_WS_URL string, phoneNumber string, OTP string, botID string) {
-	// Kết nối với Ethereum qua WebSocket
-	client, err := rpc.DialWebsocket(context.Background(), INFURA_WS_URL, "")
+	// 1. FIX: Use ethclient.Dial to get the correct client type
+	client, err := ethclient.Dial(INFURA_WS_URL)
 	if err != nil {
-		fmt.Printf("❌ Failed to connect to Ethereum WebSocket: %v\n", err)
+		fmt.Printf("❌ Failed to connect to Ethereum: %v\n", err)
+		return
 	}
 	defer client.Close()
 
-	// Parse ABI của contract
+	// Parse ABI of the contract
 	parsedABI, err := abi.JSON(strings.NewReader(contractABI))
 	if err != nil {
-		fmt.Printf("❌ Failed to parse ABI: %v", err)
+		fmt.Printf("❌ Failed to parse ABI: %v\n", err)
+		return
 	}
 
-	// Chuyển OTP thành uint256
-	uintOtp, err := untils.StringToUint256(OTP)
+	// Convert OTP to uint256
+	uintOtp, err := utils.StringToUint256(OTP)
 	if err != nil {
-		fmt.Printf("❌ Error converting OTP to uint256: %v", err)
+		fmt.Printf("❌ Error converting OTP to uint256: %v\n", err)
+		return
 	}
 
-	// Pack ABI để tạo dữ liệu gọi hàm
+	// Pack ABI to create call data
 	verifyOTPData, err := parsedABI.Pack("validateOTP", uintOtp, phoneNumber)
 	if err != nil {
-		fmt.Printf("❌ Failed to pack ABI: %v", err)
+		fmt.Printf("❌ Failed to pack ABI: %v\n", err)
+		return
 	}
 
-	// Địa chỉ contract
 	toAddress := common.HexToAddress(contractAddress)
 
-	// Tạo struct CallMsg để gửi yêu cầu `eth_call`
+	// Create CallMsg struct for eth_call
 	msgVerifyOTP := map[string]interface{}{
-		"to":   toAddress.Hex(),               // Địa chỉ contract
-		"data": hexutil.Encode(verifyOTPData), // Dữ liệu đã encode đúng chuẩn "0x"
-		//
+		"to":   toAddress.Hex(),
+		"data": hexutil.Encode(verifyOTPData),
 	}
 
-	// Kết quả nhận được từ contract
 	var result hexutil.Bytes
-	err = client.CallContext(context.Background(), &result, "eth_call", msgVerifyOTP, "latest")
+	// Use the rpc client from ethclient for the call
+	err = client.Client().CallContext(context.Background(), &result, "eth_call", msgVerifyOTP, "latest")
 	if err != nil {
-		fmt.Printf("❌ Failed to call contract: %v", err)
+		fmt.Printf("❌ Failed to call contract: %v\n", err)
+		return
 	}
 
-	// Nếu result rỗng hoặc không hợp lệ, log lỗi ngay
 	if len(result) == 0 {
-		fmt.Printf("❌ Error: Contract returned empty result")
+		fmt.Println("❌ Error: Contract returned empty result")
+		return
 	}
 
-	// Khai báo biến để nhận giá trị giải mã
-	var publicKey string
-
-	// Giải mã kết quả từ contract
-	err = parsedABI.UnpackIntoInterface(&publicKey, "validateOTP", result)
+	var decodedResult ValidateOTPResult
+	err = parsedABI.UnpackIntoInterface(&decodedResult, "validateOTP", result)
 	if err != nil {
-		fmt.Printf("❌ Failed to unpack result: %v", err)
+		fmt.Printf("❌ Failed to unpack result: %v\n", err)
 	} else {
-		fmt.Printf("✅ Decoded PublicKey: %s\n", publicKey)
-		CallCompleteAuthentication(client, parsedABI, toAddress, phoneNumber, publicKey, "0xa65f97f69e75e627c59f99bad2abd5096bfc5964dd8e66e28951aa9c984e7939", model.WhatsApp.Int())
-	}
-	// Kiểm tra kết quả giải mã
+		fmt.Printf("✅ Decoded PublicKey: %s\n", decodedResult.PublicKey)
+		fmt.Printf("✅ Decoded Wallet Address: %s\n", decodedResult.Wallet.Hex())
 
-	// Gọi tiếp quá trình xác thực
+		// 2. FIX: Removed the extra 'model.WhatsApp.Int()' argument from the call
+		CallCompleteAuthentication(client, parsedABI, toAddress, phoneNumber, decodedResult.PublicKey, "a65f97f69e75e627c59f99bad2abd5096bfc5964dd8e66e28951aa9c984e7939", decodedResult.Wallet)
+	}
 }
 
-func CallCompleteAuthentication(client *rpc.Client, parsedABI abi.ABI, contractAddress common.Address, phoneNumber, publicKey, privateKeyHex string, messageType int) {
-	// 🛠️ 1. Tạo VerifyInfo JSON
-	verifyData := model.VerifyInfo{
-		PhoneNumber: phoneNumber,
-		PublicKey:   publicKey,
-	}
-	verifyDataJson, err := json.Marshal(verifyData)
+// Function signature is correct and matches the call now
+func CallCompleteAuthentication(client *ethclient.Client, parsedABI abi.ABI, contractAddress common.Address, phoneNumber, publicKey, privateKeyHex string, userWalletAddress common.Address) {
+	// ... (rest of the function remains the same)
+	message := fmt.Sprintf("Wallet address: %s is authorized", userWalletAddress.Hex())
+
+	encryptedMessageBase64, encryptedAESKeyBase64, err := utils.EncryptData(publicKey, []byte(message))
 	if err != nil {
-		fmt.Printf("Lỗi khi mã hóa JSON: %v", err)
+		log.Printf("❌ Step 2: Error encrypting data: %v\n", err)
+		return
 	}
 
-	// 🛠️ 2. Mã hóa dữ liệu
-	encryptedData, _, err := untils.EncryptData(publicKey, verifyDataJson)
+	encryptedMessageBytes, err := base64.StdEncoding.DecodeString(encryptedMessageBase64)
+	if err != nil {
+		log.Printf("❌ Step 3: Error decoding encrypted message from base64: %v\n", err)
+		return
+	}
+	encryptedAESKeyBytes, err := base64.StdEncoding.DecodeString(encryptedAESKeyBase64)
+	if err != nil {
+		log.Printf("❌ Step 3: Error decoding encrypted AES key from base64: %v\n", err)
+		return
+	}
 
-	// 🛠️ 3. Nạp Private Key
-	privateKeyHex = strings.TrimPrefix(privateKeyHex, "0x") // Loại bỏ "0x" nếu có
 	privateKey, err := crypto.HexToECDSA(privateKeyHex)
 	if err != nil {
-		fmt.Printf("Lỗi nạp private key: %v", err)
+		log.Printf("❌ Step 4: Error loading private key: %v", err)
+		return
 	}
+	senderAddress := crypto.PubkeyToAddress(*privateKey.Public().(*ecdsa.PublicKey))
 
-	// 🛠️ 4. Lấy địa chỉ từ private key
-	publicKeyECDSA := privateKey.Public().(*ecdsa.PublicKey)
-	senderAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
-
-	// 🛠️ 5. Lấy nonce từ RPC (sửa lỗi `json: cannot unmarshal string into Go value of type uint64`)
-	var nonceHex string
-	err = client.CallContext(context.Background(), &nonceHex, "eth_getTransactionCount", senderAddress.Hex(), "pending")
+	nonce, err := client.PendingNonceAt(context.Background(), senderAddress)
 	if err != nil {
-		fmt.Printf("Lỗi lấy nonce: %v", err)
+		log.Printf("❌ Step 5: Error getting nonce: %v", err)
+		return
 	}
 
-	// Chuyển nonce từ hex về uint64
-	nonce, err := hexutil.DecodeUint64(nonceHex)
+	gasPrice, err := client.SuggestGasPrice(context.Background())
 	if err != nil {
-		fmt.Printf("Lỗi chuyển đổi nonce từ hex: %v", err)
+		log.Printf("❌ Step 6: Error getting gas price: %v", err)
+		return
 	}
 
-	// 🛠️ 6. Đóng gói dữ liệu theo ABI
-	completeAuthenticationData, err := parsedABI.Pack("completeAuthentication", encryptedData, publicKey)
+	chainID, err := client.ChainID(context.Background())
 	if err != nil {
-		fmt.Printf("Lỗi đóng gói dữ liệu: %v", err)
+		log.Printf("❌ Step 7: Error getting chain ID: %v", err)
+		return
 	}
 
-	// 🛠️ 7. Lấy gas price qua RPC
-	var gasPriceHex string
-	err = client.CallContext(context.Background(), &gasPriceHex, "eth_gasPrice")
+	completeAuthData := packData(parsedABI, "completeAuthentication", phoneNumber, encryptedMessageBytes, encryptedAESKeyBytes)
+
+	gasLimit := uint64(500000)
+	tx := types.NewTransaction(nonce, contractAddress, big.NewInt(0), gasLimit, gasPrice, completeAuthData)
+
+	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
 	if err != nil {
-		fmt.Printf("Lỗi lấy gas price: %v", err)
+		log.Printf("❌ Step 10: Error signing transaction: %v", err)
+		return
 	}
 
-	// Chuyển gasPrice từ hex về *big.Int
-	gasPrice := new(big.Int)
-	gasPrice.SetString(strings.TrimPrefix(gasPriceHex, "0x"), 16)
-
-	// 🛠️ 8. Lấy Chain ID qua RPC
-	var chainIDHex string
-	err = client.CallContext(context.Background(), &chainIDHex, "eth_chainId")
+	err = client.SendTransaction(context.Background(), signedTx)
 	if err != nil {
-		fmt.Printf("Lỗi lấy chain ID: %v", err)
+		log.Printf("❌ Step 11: Error sending transaction: %v", err)
+		return
 	}
 
-	// Chuyển chainID từ hex về *big.Int
-	chainID := new(big.Int)
-	chainID.SetString(strings.TrimPrefix(chainIDHex, "0x"), 16)
+	log.Printf("✅ Step 11: Transaction sent successfully! TxHash: %s", signedTx.Hash().Hex())
+}
 
-	// 🛠️ 9. Tạo giao dịch
-	gasLimit := uint64(300000)
-	tx := types.NewTransaction(nonce, contractAddress, big.NewInt(0), gasLimit, gasPrice, completeAuthenticationData)
-
-	// 🛠️ 10. Ký giao dịch
-	signer := types.NewEIP155Signer(chainID)
-	signedTx, err := types.SignTx(tx, signer, privateKey)
+func packData(parsedABI abi.ABI, method string, args ...interface{}) []byte {
+	data, err := parsedABI.Pack(method, args...)
 	if err != nil {
-		fmt.Printf("Lỗi ký giao dịch: %v", err)
+		log.Fatalf("Fatal: Failed to pack data for %s: %v", method, err)
+	}
+	return data
+}
+
+func saveEncryptedDataToLog(userWalletAddress, phoneNumber, encryptedMessage, encryptedKey string) error {
+	logDir := "log"
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		err = os.Mkdir(logDir, 0755)
+		if err != nil {
+			return fmt.Errorf("failed to create log directory: %w", err)
+		}
 	}
 
-	// 🛠️ 11. Gửi giao dịch qua WebSocket
-	rawTxBytes, err := signedTx.MarshalBinary()
+	data := LogData{
+		UserWalletAddress:      userWalletAddress,
+		PhoneNumber:            phoneNumber,
+		EncryptedMessageBase64: encryptedMessage,
+		EncryptedAESKeyBase64:  encryptedKey,
+		Timestamp:              time.Now().Format(time.RFC3339),
+	}
+
+	fileContent, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		fmt.Printf("Lỗi mã hóa giao dịch: %v", err)
+		return fmt.Errorf("failed to marshal log data to JSON: %w", err)
 	}
 
-	rawTxHex := hexutil.Encode(rawTxBytes) // Chuyển sang hex
-	var txHash common.Hash
-	err = client.CallContext(context.Background(), &txHash, "eth_sendRawTransaction", rawTxHex)
+	fileName := fmt.Sprintf("%s_%s.json", userWalletAddress, time.Now().Format("20060102150405"))
+	filePath := filepath.Join(logDir, fileName)
+
+	err = os.WriteFile(filePath, fileContent, 0644)
 	if err != nil {
-		fmt.Printf("Lỗi gửi giao dịch: %v", err)
+		return fmt.Errorf("failed to write to log file: %w", err)
 	}
 
-	fmt.Printf("✅ Giao dịch gửi thành công! TxHash: %s\n", txHash.Hex())
+	log.Printf("✅ Encrypted data saved to log file: %s", filePath)
+	return nil
 }

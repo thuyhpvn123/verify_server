@@ -1,13 +1,13 @@
 package handler
 
 import (
-	"WhatsappVerifyOTP/model"
-	"WhatsappVerifyOTP/service"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"verify_server/model"
+	"verify_server/service"
 )
 
 func ReceiveMessageWhatsapp(contractAddress string, contractABI string, INFURAL_URL string) http.HandlerFunc {
@@ -34,7 +34,16 @@ func ReceiveMessageWhatsapp(contractAddress string, contractABI string, INFURAL_
 				for _, change := range entry.Changes {
 					for _, message := range change.Value.Messages {
 						fmt.Printf("📩 Tin nhắn từ %s: %s\n", message.From, message.Text.Body)
-						service.CheckOTP(contractAddress, contractABI, INFURAL_URL, message.From, message.Text.Body, "1")
+
+						// convert phone number
+						phoneNumberFromWhatsapp := message.From
+
+						if len(phoneNumberFromWhatsapp) > 2 && phoneNumberFromWhatsapp[:2] == "84" {
+							phoneNumberFromWhatsapp = "0" + phoneNumberFromWhatsapp[2:]
+							// fmt.Printf("Converted phone number:: %s\n", phoneNumberFromWhatsapp)
+						}
+
+						service.CheckOTP(contractAddress, contractABI, INFURAL_URL, phoneNumberFromWhatsapp, message.Text.Body, "1")
 					}
 				}
 			}

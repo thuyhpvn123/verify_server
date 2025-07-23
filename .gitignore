@@ -1,1 +1,9 @@
 cmd/
+test/~/
+test/chrome-profiles/
+temp_cloned_profiles/
+chromedriver
+private_keys.txt
+abi.json
+.env
+run.sh
