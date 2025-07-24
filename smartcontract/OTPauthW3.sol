@@ -18,7 +18,7 @@ contract AuthOTP {
         uint256 OTP;
         string  publicKey;
         bool verified;
-        uint256 botId;
+        uint256 botId; // Sẽ không được sử dụng cho phương thức Email
         uint256 timeRequest;
     }
 
@@ -29,37 +29,47 @@ contract AuthOTP {
     mapping(string => HashRecord) public publicKeyHashes;
 
     // --- STATE VARIABLES ---
+    
+    // MỚI: Thêm một biến để lưu địa chỉ email của mail server
+    string public mailServerEmail; 
+    address public owner;
+
     mapping(string => OTP) public OTPs;
     mapping(uint => DetailBot) public detailBots;
     uint public detailBotsCount;
 
-    // --- LOGIC ĐÃ SỬA ĐỔI ---
-    
-    // Giữ lại: "Sổ vàng" xác nhận một địa chỉ ví đã được xác thực.
     mapping(address => bool) public authenticatedWallets;
-
-    // Giữ lại: Mapping để "nhớ" tạm thời ví nào đang được xác thực bởi SĐT nào.
-    // Logic khóa vĩnh viễn sẽ được loại bỏ.
-    mapping(string => address) public phoneToWallet;
-
-    // ĐÃ LOẠI BỎ: Không cần liên kết 2 chiều nữa.
-    // mapping(address => string) public walletToPhone;
-
-    // Giữ lại: Cooldown chống spam.
+    mapping(string => address) public identifierToWallet; // Đổi tên để dễ hiểu hơn
     mapping(address => uint256) public walletCooldown;
-
     mapping(address => bytes32) public authenticationHashes;
-
 
     // --- EVENTS ---
     event AuthenticationHashStored(address indexed wallet, bytes32 dataHash);
-    event AuthenticationCompleted(address indexed wallet, string indexed phoneNumber);
-    event AuthenticationRequested(address indexed wallet, uint256 otp, string chatbotPhone, TypeMethod typeMethod);
+    event AuthenticationCompleted(address indexed wallet, string indexed identifier);
+    
+    // Event cho WhatsApp/Telegram
+    event BotAuthenticationRequested(address indexed wallet, uint256 otp, string chatbotPhone, TypeMethod typeMethod);
+    
+    // Event MỚI dành riêng cho Email
+    event EmailAuthenticationRequested(address indexed wallet, uint256 otp, string userEmail, string targetMailServerEmail);
+
+    // --- MODIFIERS ---
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function");
+        _;
+    }
 
     // --- FUNCTIONS ---
-    constructor() {}
+    constructor() {
+        owner = msg.sender;
+    }
 
-    function addBot(string memory _phoneNumber, TypeMethod _typeMethod) public {
+    // MỚI: Hàm để chủ sở hữu contract thiết lập địa chỉ mail server
+    function setMailServerEmail(string memory _email) public onlyOwner {
+        mailServerEmail = _email;
+    }
+
+    function addBot(string memory _phoneNumber, TypeMethod _typeMethod) public onlyOwner {
         detailBots[detailBotsCount] = DetailBot({
             phoneNumber: _phoneNumber,
             typeMethod: _typeMethod,
@@ -70,7 +80,7 @@ contract AuthOTP {
         detailBotsCount++;
     }
 
-    function updateBot(uint _botId, string memory _phoneNumber, TypeMethod _typeMethod, bool _status) public {
+    function updateBot(uint _botId, string memory _phoneNumber, TypeMethod _typeMethod, bool _status) public onlyOwner {
         require(_botId < detailBotsCount, "Invalid bot ID");
         detailBots[_botId].phoneNumber = _phoneNumber;
         detailBots[_botId].typeMethod = _typeMethod;
@@ -88,75 +98,95 @@ contract AuthOTP {
         }
         return detailBotsCount;
     }
+    
+    // ĐÃ CẬP NHẬT: Hàm requestAuthentication được điều chỉnh logic
+    function requestAuthentication(string memory _identifier, address _walletAddress, string memory _publicKey, TypeMethod _typeMethod) public {
 
-    function requestAuthentication(string memory _userPhoneNumber, address _walletAddress, string memory _publicKey, TypeMethod _typeMethod) public {
-        require(OTPs[_userPhoneNumber].timeRequest + 60 < block.timestamp, "OTP for this phone was sent recently.");
+        require(!authenticatedWallets[_walletAddress], "Wallet is already authenticated.");
+        require(OTPs[_identifier].timeRequest + 60 < block.timestamp, "OTP for this identifier was sent recently.");
         require(walletCooldown[_walletAddress] + 60 < block.timestamp, "OTP for this wallet was sent recently.");
 
-        // ĐÃ LOẠI BỎ: Dòng code kiểm tra khóa vĩnh viễn đã được xóa bỏ.
-        // Giờ đây một SĐT có thể bắt đầu phiên xác thực cho bất kỳ ví nào.
+        uint256 otp = (uint256(keccak256(abi.encodePacked(block.timestamp, _walletAddress))) % 900000) + 100000;
+        
+        // --- PHÂN LUỒNG LOGIC ---
+        if (_typeMethod == TypeMethod.Email) {
+            // ---- XỬ LÝ CHO EMAIL ----
+            require(bytes(mailServerEmail).length > 0, "Mail server email not set.");
 
-        uint availableBotId = findAvailableBot(_typeMethod);
-        require(availableBotId < detailBotsCount, "No available bots.");
+            // Lưu OTP request mà không cần thông tin bot
+            OTPs[_identifier] = OTP({
+                OTP: otp,
+                publicKey: _publicKey,
+                verified: false,
+                botId: 0, // Không áp dụng cho email
+                timeRequest: block.timestamp
+            });
 
-        uint256 otp = uint256(keccak256(abi.encodePacked(block.timestamp, _walletAddress))) % 1000000;
+            // Phát sự kiện dành riêng cho Email
+            emit EmailAuthenticationRequested(_walletAddress, otp, _identifier, mailServerEmail);
 
-        detailBots[availableBotId].busy = true;
-        detailBots[availableBotId].timeOccupied = block.timestamp + 300;
+        } else {
+            // ---- XỬ LÝ CHO WHATSAPP/TELEGRAM (Logic cũ) ----
+            uint availableBotId = findAvailableBot(_typeMethod);
+            require(availableBotId < detailBotsCount, "No available bots.");
 
-        OTPs[_userPhoneNumber] = OTP({
-            OTP: otp,
-            publicKey: _publicKey,
-            verified: false,
-            botId: availableBotId,
-            timeRequest: block.timestamp
-        });
+            detailBots[availableBotId].busy = true;
+            detailBots[availableBotId].timeOccupied = block.timestamp + 300;
 
-        // THAY ĐỔI: Chỉ tạo liên kết tạm thời cho phiên làm việc này.
-        // Lần sau nếu dùng SĐT này cho ví khác, nó sẽ ghi đè lên.
-        phoneToWallet[_userPhoneNumber] = _walletAddress;
+            OTPs[_identifier] = OTP({
+                OTP: otp,
+                publicKey: _publicKey,
+                verified: false,
+                botId: availableBotId,
+                timeRequest: block.timestamp
+            });
 
+            // Phát sự kiện cho Bot
+            emit BotAuthenticationRequested(_walletAddress, otp, detailBots[availableBotId].phoneNumber, detailBots[availableBotId].typeMethod);
+        }
+
+        // --- LOGIC CHUNG ---
+        identifierToWallet[_identifier] = _walletAddress;
         walletCooldown[_walletAddress] = block.timestamp;
-
-        emit AuthenticationRequested(_walletAddress, otp, detailBots[availableBotId].phoneNumber, detailBots[availableBotId].typeMethod);
     }
 
-    function validateOTP(uint256 _otp, string memory userPhoneNumber) public returns (string memory publicKey, address wallet) {
-        OTP storage request = OTPs[userPhoneNumber];
+    // Đổi tên tham số để dễ hiểu hơn, logic không đổi
+    function validateOTP(uint256 _otp, string memory _identifier) public returns (string memory publicKey, address wallet) {
+        OTP storage request = OTPs[_identifier];
         require(request.OTP == _otp, "Invalid OTP");
         require(!request.verified, "Already verified");
         require(block.timestamp <= request.timeRequest + 300, "OTP expired");
 
         request.verified = true;
-        detailBots[request.botId].busy = false;
+        
+        // Chỉ giải phóng bot nếu phương thức không phải là Email
+        if (detailBots[request.botId].typeMethod != TypeMethod.Email) {
+             detailBots[request.botId].busy = false;
+        }
 
-        // Giữ nguyên: Vẫn trả về ví đã được liên kết tạm thời cho phiên này.
-        return (request.publicKey, phoneToWallet[userPhoneNumber]);
+        return (request.publicKey, identifierToWallet[_identifier]);
     }
 
+    // Đổi tên tham số để dễ hiểu hơn, logic không đổi
     function completeAuthentication(
-        string memory _userPhoneNumber,
-        bytes memory _encryptedMessage,   // Dữ liệu đã mã hóa AES
-        bytes memory _encryptedSecretKey  // Khóa AES đã mã hóa RSA
+        string memory _identifier,
+        bytes memory _encryptedMessage,
+        bytes memory _encryptedSecretKey
     ) public {
-        OTP storage request = OTPs[_userPhoneNumber];
+        OTP storage request = OTPs[_identifier];
         require(request.verified, "OTP not verified yet.");
 
-        address userWallet = phoneToWallet[_userPhoneNumber];
-        require(userWallet != address(0), "Phone not linked to any wallet for this session.");
+        address userWallet = identifierToWallet[_identifier];
+        require(userWallet != address(0), "Identifier not linked to any wallet for this session.");
 
-        // 1. Đánh dấu địa chỉ ví này đã được xác thực
         authenticatedWallets[userWallet] = true;
-
         bytes32 dataHash = keccak256(abi.encodePacked(_encryptedMessage, _encryptedSecretKey));
-
         authenticationHashes[userWallet] = dataHash;
 
-        emit AuthenticationCompleted(userWallet, _userPhoneNumber);
-
+        emit AuthenticationCompleted(userWallet, _identifier);
         emit AuthenticationHashStored(userWallet, dataHash);
     }
-
+    
     function verifyAuthenticationHash(
         address _userWallet,
         bytes memory _encryptedMessage,
@@ -176,5 +206,4 @@ contract AuthOTP {
         // So sánh hai hash
         return storedHash == providedHash;
     }
-
 }

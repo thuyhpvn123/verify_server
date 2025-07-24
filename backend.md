@@ -67,7 +67,7 @@ Luồng xử lý backend trong hệ thống xác thực OTP bao gồm các bư�
 ### 6. Cung Cấp Dữ Liệu Cho Bên Thứ Ba (Tùy Chọn) 🤝
 - **Xử lý**: Sau khi xác thực thành công, người dùng hoặc hệ thống có thể chia sẻ dữ liệu đã mã hóa với bên thứ ba.
 - **Chi tiết**:
-  - 📤 Bên thứ ba gửi hash của dữ liệu đã nhận được đến Smart Contract để kiểm tra thông qua hàm `verifyHash`.
+  - 📤 Bên thứ ba gửi hash của dữ liệu đã nhận được đến Smart Contract để kiểm tra thông qua hàm `verifyAuthenticationHash`.
   - 🔍 Smart Contract so sánh hash này với hash đã lưu để xác nhận tính chính xác.
 - **Kết quả**: Bên thứ ba nhận được kết quả xác minh (hợp lệ hoặc không hợp lệ).
 
