@@ -8,3 +8,4 @@ abi.json
 .env
 run.sh
 log/
+logs/

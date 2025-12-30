@@ -6,11 +6,16 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"verify_server/model"
-	"verify_server/service"
+
+	model "github.com/meta-node-blockchain/verify_server/model"
+	service "github.com/meta-node-blockchain/verify_server/service"
+	"github.com/meta-node-blockchain/meta-node/cmd/client"
+	"github.com/ethereum/go-ethereum/common"
+
+
 )
 
-func ReceiveMessageWhatsapp(contractAddress string, contractABI string, INFURAL_URL string) http.HandlerFunc {
+func ReceiveMessageWhatsapp(fromAddress common.Address ,client *client.Client,contractAddress string, contractABI string, INFURAL_URL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Đọc dữ liệu JSON từ request body
 		body, err := io.ReadAll(r.Body)
@@ -43,7 +48,7 @@ func ReceiveMessageWhatsapp(contractAddress string, contractABI string, INFURAL_
 							// fmt.Printf("Converted phone number:: %s\n", phoneNumberFromWhatsapp)
 						}
 
-						service.CheckOTP(contractAddress, contractABI, INFURAL_URL, phoneNumberFromWhatsapp, message.Text.Body, "1")
+						service.CheckOTP(fromAddress,client,contractAddress, contractABI, INFURAL_URL, phoneNumberFromWhatsapp, message.Text.Body, "1")
 					}
 				}
 			}

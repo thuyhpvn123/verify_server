@@ -7,11 +7,15 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"verify_server/model"
-	"verify_server/service"
+
+	model "github.com/meta-node-blockchain/verify_server/model"
+	service "github.com/meta-node-blockchain/verify_server/service"
+	"github.com/meta-node-blockchain/meta-node/cmd/client"
+	"github.com/ethereum/go-ethereum/common"
+
 )
 
-func HandlerTelegramMessage(contractAddress string, contractABI string, INFURAL_URL string) http.HandlerFunc {
+func HandlerTelegramMessage(fromAddress common.Address ,client *client.Client,contractAddress string, contractABI string, INFURAL_URL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		// --- Phần 1: Đọc và phân tích tin nhắn từ Telegram ---
@@ -56,7 +60,7 @@ func HandlerTelegramMessage(contractAddress string, contractABI string, INFURAL_
 		userPhoneNumber := parts[1]
 
 		// --- Phần 4: Gửi dữ liệu đã tách đến Smart Contract để xác thực ---
-		service.CheckOTP(contractAddress, contractABI, INFURAL_URL, userPhoneNumber, otp, botUsername)
+		service.CheckOTP(fromAddress,client,contractAddress, contractABI, INFURAL_URL, userPhoneNumber, otp, botUsername)
 
 		fmt.Fprintf(w, "OK")
 	}
