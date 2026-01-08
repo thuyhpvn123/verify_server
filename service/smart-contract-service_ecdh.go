@@ -1,7 +1,7 @@
 package service
 
 import (
-	"crypto/ecdsa"
+	// "crypto/ecdsa"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -23,7 +23,7 @@ import (
 	// "github.com/ethereum/go-ethereum/ethclient"
 	// "github.com/ethereum/go-ethereum/rpc"
 	"github.com/meta-node-blockchain/meta-node/cmd/client"
-	"github.com/meta-node-blockchain/meta-node/pkg/logger"
+	// "github.com/meta-node-blockchain/meta-node/pkg/logger"
 	pb "github.com/meta-node-blockchain/meta-node/pkg/proto"
 
 	"github.com/meta-node-blockchain/meta-node/pkg/transaction"
@@ -43,76 +43,98 @@ type ValidateOTPResult struct {
 	PublicKey string
 	Wallet    common.Address
 }
+// Trong service/check_otp.go
 
-func CheckOTP(fromAddress common.Address ,client *client.Client,contractAddress string, contractABI string, RPC_HTTP_URL string, phoneNumber string, OTP string, botID string) {
+// Thay đổi signature để return result
+func CheckOTP(fromAddress common.Address, client *client.Client, contractAddress string, contractABI string, RPC_HTTP_URL string, phoneNumber string, OTP string, botID string) (*ValidateOTPResult, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(contractABI))
 	if err != nil {
-		fmt.Printf("❌ Failed to parse ABI: %v\n", err)
-		return
+		return nil, fmt.Errorf("failed to parse ABI: %w", err)
 	}
 
 	uintOtp, err := utils.StringToUint256(OTP)
 	if err != nil {
-		fmt.Printf("❌ Error converting OTP to uint256: %v\n", err)
-		return
+		return nil, fmt.Errorf("error converting OTP to uint256: %w", err)
 	}
 
 	verifyOTPData, err := parsedABI.Pack("validateOTP", uintOtp, phoneNumber)
 	if err != nil {
-		fmt.Printf("❌ Failed to pack ABI: %v\n", err)
-		return
+		return nil, fmt.Errorf("failed to pack ABI: %w", err)
 	}
 
 	toAddress := common.HexToAddress(contractAddress)
-
-	// fromAddress := common.HexToAddress("0xa620249dc17f23887226506b3eb260f4802a7efc") // Replace with actual address
 	relatedAddress := []common.Address{}
 	maxGas := uint64(5_000_000_000)
 	maxGasPrice := uint64(1_000_000_000)
 	timeUse := uint64(0)
 
-	// Step 15: Send transaction
-		callData := transaction.NewCallData(verifyOTPData)
+	callData := transaction.NewCallData(verifyOTPData)
 
-		bData, err := callData.Marshal()
-		if err != nil {
-			logger.Error(fmt.Sprintf("Marshal calldata for %s failed", "verifyOTP"), err)
-		}
+	bData, err := callData.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("marshal calldata failed: %w", err)
+	}
 
+	log.Println("🔄 Sending validateOTP transaction to blockchain...")
 
-		receipt, err := client.SendTransactionWithDeviceKey(
+	receipt, err := client.SendTransactionWithDeviceKey(
+		fromAddress,
+		toAddress,
+		big.NewInt(0),
+		bData,
+		relatedAddress,
+		maxGas,
+		maxGasPrice,
+		timeUse,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("transaction failed: %w", err)
+	}
+
+	log.Printf("📝 Transaction receipt status: %v", receipt.Status())
+
+	// ✅ Check receipt status
+	if receipt.Status() != pb.RECEIPT_STATUS_RETURNED {
+		return nil, fmt.Errorf("transaction failed with status: %v", receipt.Status())
+	}
+
+	log.Println("✅ Transaction successful, unpacking result...")
+
+	// Unpack result
+	var decodedResult ValidateOTPResult
+	err = parsedABI.UnpackIntoInterface(&decodedResult, "validateOTP", receipt.Return())
+	if err != nil {
+		return nil, fmt.Errorf("failed to unpack result: %w", err)
+	}
+
+	log.Printf("✅ Decoded PublicKey: %s", decodedResult.PublicKey)
+	log.Printf("✅ Decoded Wallet Address: %s", decodedResult.Wallet.Hex())
+
+	// ✅ Call completeAuthentication if email
+	if botID == "email" {
+		log.Println("🔐 Calling completeAuthentication...")
+		err = CallCompleteAuthentication(
 			fromAddress,
+			client,
+			parsedABI,
 			toAddress,
-			big.NewInt(0),
-			bData,
-			relatedAddress,
-			maxGas,
-			maxGasPrice,
-			timeUse,
+			phoneNumber,
+			decodedResult.PublicKey,
+			"72a147b91248b0396f34d2cebf5d9817336163f944d87bf40e66cddd06bddf0e", // TODO: Move to config
+			decodedResult.Wallet,
 		)
-		if err !=nil {
-			logger.Error("Error:",err)
+		if err != nil {
+			log.Printf("⚠️ Warning: completeAuthentication failed: %v", err)
+			// Don't return error here, OTP validation was successful
+		} else {
+			log.Println("✅ completeAuthentication successful")
 		}
-		if receipt.Status() == pb.RECEIPT_STATUS_RETURNED {
-				log.Printf("✅ Step 15: Transaction sent successfully! ", )
-			var decodedResult ValidateOTPResult
-			err = parsedABI.UnpackIntoInterface(&decodedResult, "validateOTP", receipt.Return())
-			if err != nil {
-				fmt.Printf("❌ Failed to unpack result: %v\n", err)
-			} else {
-				fmt.Printf("✅ Decoded PublicKey: %s\n", decodedResult.PublicKey)
-				fmt.Printf("✅ Decoded Wallet Address: %s\n", decodedResult.Wallet.Hex())
-				if(botID == "email"){
-					CallCompleteAuthentication(fromAddress,client, parsedABI, toAddress, phoneNumber, decodedResult.PublicKey, "72a147b91248b0396f34d2cebf5d9817336163f944d87bf40e66cddd06bddf0e", decodedResult.Wallet)
+	}
 
-				}
-			}
-
-		}
-
+	return &decodedResult, nil
 }
-
-func CallCompleteAuthentication(fromAddress common.Address ,client *client.Client, parsedABI abi.ABI, contractAddress common.Address, phoneNumber, publicKey, privateKeyHex string, userWalletAddress common.Address) {
+// Thêm return error
+func CallCompleteAuthentication(fromAddress common.Address, client *client.Client, parsedABI abi.ABI, contractAddress common.Address, phoneNumber, publicKey, privateKeyHex string, userWalletAddress common.Address) error {
 	// Step 1: Create message
 	message := fmt.Sprintf("Wallet address: %s is authorized", userWalletAddress.Hex())
 	log.Printf("📝 Step 1: Created message: %s", message)
@@ -120,8 +142,7 @@ func CallCompleteAuthentication(fromAddress common.Address ,client *client.Clien
 	// Step 2: Generate ephemeral key pair
 	ephemeralPrivKey, err := crypto.GenerateKey()
 	if err != nil {
-		log.Printf("❌ Step 2: Error generating ephemeral key: %v\n", err)
-		return
+		return fmt.Errorf("error generating ephemeral key: %w", err)
 	}
 
 	ephemeralPubKey := crypto.FromECDSAPub(&ephemeralPrivKey.PublicKey)
@@ -129,13 +150,11 @@ func CallCompleteAuthentication(fromAddress common.Address ,client *client.Clien
 	ephemeralPrivKeyBytes := crypto.FromECDSA(ephemeralPrivKey)
 
 	log.Printf("🔑 Step 2: Generated ephemeral key pair")
-	log.Printf("   - Ephemeral public key: %s", ephemeralPubKeyHex)
 
 	// Step 3: Decode user's public key
 	userPubKeyBytes, err := hex.DecodeString(strings.TrimPrefix(publicKey, "0x"))
 	if err != nil {
-		log.Printf("❌ Step 3: Error decoding user public key: %v\n", err)
-		return
+		return fmt.Errorf("error decoding user public key: %w", err)
 	}
 	log.Printf("🔍 Step 3: Decoded user public key (length: %d bytes)", len(userPubKeyBytes))
 
@@ -143,22 +162,19 @@ func CallCompleteAuthentication(fromAddress common.Address ,client *client.Clien
 	log.Printf("🔐 Step 4: Calculating ECDH shared secret...")
 	sharedSecretHex, err := utils.ECDHSharedSecretHex(ephemeralPrivKeyBytes, userPubKeyBytes)
 	if err != nil {
-		log.Printf("❌ Step 4: Error calculating ECDH shared secret: %v\n", err)
-		return
+		return fmt.Errorf("error calculating ECDH shared secret: %w", err)
 	}
 
 	sharedSecretBytes, err := hex.DecodeString(sharedSecretHex)
 	if err != nil {
-		log.Printf("❌ Step 4: Error decoding shared secret: %v\n", err)
-		return
+		return fmt.Errorf("error decoding shared secret: %w", err)
 	}
 	log.Printf("✅ Step 4: Shared secret calculated (length: %d bytes)", len(sharedSecretBytes))
 
 	// Step 5: Generate random IV for AES-CBC
-	iv := make([]byte, 16) // AES block size is 16 bytes
+	iv := make([]byte, 16)
 	if _, err := rand.Read(iv); err != nil {
-		log.Printf("❌ Step 5: Error generating IV: %v\n", err)
-		return
+		return fmt.Errorf("error generating IV: %w", err)
 	}
 	ivHex := hex.EncodeToString(iv)
 	log.Printf("🎲 Step 5: Generated IV: %s", ivHex)
@@ -167,8 +183,7 @@ func CallCompleteAuthentication(fromAddress common.Address ,client *client.Clien
 	log.Printf("🔐 Step 6: Encrypting message with AES-CBC...")
 	encryptedBytes, err := utils.EncryptAESCBC(sharedSecretBytes, []byte(message), iv)
 	if err != nil {
-		log.Printf("❌ Step 6: Error encrypting message: %v\n", err)
-		return
+		return fmt.Errorf("error encrypting message: %w", err)
 	}
 	encryptedMessageBase64 := base64.StdEncoding.EncodeToString(encryptedBytes)
 	log.Printf("✅ Step 6: Message encrypted successfully (length: %d bytes)", len(encryptedBytes))
@@ -182,59 +197,242 @@ func CallCompleteAuthentication(fromAddress common.Address ,client *client.Clien
 	// Step 8: Decode ephemeral public key to bytes for transaction
 	ephemeralPubKeyBytes, err := hex.DecodeString(ephemeralPubKeyHex)
 	if err != nil {
-		log.Printf("❌ Step 8: Error decoding ephemeral public key: %v\n", err)
-		return
+		return fmt.Errorf("error decoding ephemeral public key: %w", err)
 	}
 
-	// Step 9: Load server private key
-	privateKey, err := crypto.HexToECDSA(privateKeyHex)
-	if err != nil {
-		log.Printf("❌ Step 9: Error loading private key: %v", err)
-		return
-	}
-	senderAddress := crypto.PubkeyToAddress(*privateKey.Public().(*ecdsa.PublicKey))
-	log.Printf("📤 Step 9: Sender address: %s", senderAddress.Hex())
-
-	// Step 10: Get nonce
-
-	// Step 13: Pack data for completeAuthentication
-	// Smart contract function signature:
-	// completeAuthentication(string memory phoneNumber, bytes memory encryptedMessage, bytes memory ephemeralPublicKey, bytes memory iv)
+	// Step 9-13: Pack data
 	completeAuthData := packData(parsedABI, "completeAuthentication", phoneNumber, encryptedBytes, ephemeralPubKeyBytes)
 	log.Printf("📦 Step 13: Data packed successfully")
 
-	log.Printf("✍️ Step 14: Transaction signed successfully")
-	// fromAddress := common.HexToAddress("0xa620249dc17f23887226506b3eb260f4802a7efc") // Replace with actual address
+	// Step 14-15: Send transaction
 	relatedAddress := []common.Address{}
 	maxGas := uint64(5_000_000_000)
 	maxGasPrice := uint64(1_000_000_000)
 	timeUse := uint64(0)
 
-	// Step 15: Send transaction
-		callData := transaction.NewCallData(completeAuthData)
+	callData := transaction.NewCallData(completeAuthData)
+	bData, err := callData.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal calldata failed: %w", err)
+	}
 
-		bData, err := callData.Marshal()
-		if err != nil {
-			logger.Error(fmt.Sprintf("Marshal calldata for %s failed", "migrateCode"), err)
-		}
+	log.Println("🔄 Sending completeAuthentication transaction...")
 
+	receipt, err := client.SendTransactionWithDeviceKey(
+		fromAddress,
+		contractAddress,
+		big.NewInt(0),
+		bData,
+		relatedAddress,
+		maxGas,
+		maxGasPrice,
+		timeUse,
+	)
+	if err != nil {
+		return fmt.Errorf("transaction failed: %w", err)
+	}
 
-		receipt, err := client.SendTransactionWithDeviceKey(
-			fromAddress,
-			contractAddress,
-			big.NewInt(0),
-			bData,
-			relatedAddress,
-			maxGas,
-			maxGasPrice,
-			timeUse,
-		)
-		if receipt.Status() == pb.RECEIPT_STATUS_RETURNED {
-				log.Printf("✅ Step 15: Transaction sent successfully! ", )
+	log.Printf("📝 Transaction receipt status: %v", receipt.Status())
 
-		}
+	if receipt.Status() != pb.RECEIPT_STATUS_RETURNED {
+		return fmt.Errorf("transaction failed with status: %v", receipt.Status())
+	}
 
+	log.Printf("✅ Step 15: completeAuthentication transaction sent successfully!")
+	return nil
 }
+// func CheckOTP(fromAddress common.Address ,client *client.Client,contractAddress string, contractABI string, RPC_HTTP_URL string, phoneNumber string, OTP string, botID string) {
+// 	parsedABI, err := abi.JSON(strings.NewReader(contractABI))
+// 	if err != nil {
+// 		fmt.Printf("❌ Failed to parse ABI: %v\n", err)
+// 		return
+// 	}
+
+// 	uintOtp, err := utils.StringToUint256(OTP)
+// 	if err != nil {
+// 		fmt.Printf("❌ Error converting OTP to uint256: %v\n", err)
+// 		return
+// 	}
+
+// 	verifyOTPData, err := parsedABI.Pack("validateOTP", uintOtp, phoneNumber)
+// 	if err != nil {
+// 		fmt.Printf("❌ Failed to pack ABI: %v\n", err)
+// 		return
+// 	}
+
+// 	toAddress := common.HexToAddress(contractAddress)
+
+// 	// fromAddress := common.HexToAddress("0xa620249dc17f23887226506b3eb260f4802a7efc") // Replace with actual address
+// 	relatedAddress := []common.Address{}
+// 	maxGas := uint64(5_000_000_000)
+// 	maxGasPrice := uint64(1_000_000_000)
+// 	timeUse := uint64(0)
+
+// 	// Step 15: Send transaction
+// 		callData := transaction.NewCallData(verifyOTPData)
+
+// 		bData, err := callData.Marshal()
+// 		if err != nil {
+// 			logger.Error(fmt.Sprintf("Marshal calldata for %s failed", "verifyOTP"), err)
+// 		}
+
+
+// 		receipt, err := client.SendTransactionWithDeviceKey(
+// 			fromAddress,
+// 			toAddress,
+// 			big.NewInt(0),
+// 			bData,
+// 			relatedAddress,
+// 			maxGas,
+// 			maxGasPrice,
+// 			timeUse,
+// 		)
+// 		if err !=nil {
+// 			logger.Error("Error:",err)
+// 		}
+// 		fmt.Println("aaaaaaaaa")
+// 		if receipt.Status() == pb.RECEIPT_STATUS_RETURNED {
+// 				log.Printf("✅ Step 15: Transaction sent successfully! ", )
+// 			var decodedResult ValidateOTPResult
+// 			err = parsedABI.UnpackIntoInterface(&decodedResult, "validateOTP", receipt.Return())
+// 			if err != nil {
+// 				fmt.Printf("❌ Failed to unpack result: %v\n", err)
+// 			} else {
+// 				fmt.Printf("✅ Decoded PublicKey: %s\n", decodedResult.PublicKey)
+// 				fmt.Printf("✅ Decoded Wallet Address: %s\n", decodedResult.Wallet.Hex())
+// 				if(botID == "email"){
+// 					CallCompleteAuthentication(fromAddress,client, parsedABI, toAddress, phoneNumber, decodedResult.PublicKey, "72a147b91248b0396f34d2cebf5d9817336163f944d87bf40e66cddd06bddf0e", decodedResult.Wallet)
+
+// 				}
+// 			}
+
+// 		}
+
+// }
+
+// func CallCompleteAuthentication(fromAddress common.Address ,client *client.Client, parsedABI abi.ABI, contractAddress common.Address, phoneNumber, publicKey, privateKeyHex string, userWalletAddress common.Address) {
+// 	// Step 1: Create message
+// 	message := fmt.Sprintf("Wallet address: %s is authorized", userWalletAddress.Hex())
+// 	log.Printf("📝 Step 1: Created message: %s", message)
+
+// 	// Step 2: Generate ephemeral key pair
+// 	ephemeralPrivKey, err := crypto.GenerateKey()
+// 	if err != nil {
+// 		log.Printf("❌ Step 2: Error generating ephemeral key: %v\n", err)
+// 		return
+// 	}
+
+// 	ephemeralPubKey := crypto.FromECDSAPub(&ephemeralPrivKey.PublicKey)
+// 	ephemeralPubKeyHex := hex.EncodeToString(ephemeralPubKey)
+// 	ephemeralPrivKeyBytes := crypto.FromECDSA(ephemeralPrivKey)
+
+// 	log.Printf("🔑 Step 2: Generated ephemeral key pair")
+// 	log.Printf("   - Ephemeral public key: %s", ephemeralPubKeyHex)
+
+// 	// Step 3: Decode user's public key
+// 	userPubKeyBytes, err := hex.DecodeString(strings.TrimPrefix(publicKey, "0x"))
+// 	if err != nil {
+// 		log.Printf("❌ Step 3: Error decoding user public key: %v\n", err)
+// 		return
+// 	}
+// 	log.Printf("🔍 Step 3: Decoded user public key (length: %d bytes)", len(userPubKeyBytes))
+
+// 	// Step 4: Calculate shared secret using ECDH
+// 	log.Printf("🔐 Step 4: Calculating ECDH shared secret...")
+// 	sharedSecretHex, err := utils.ECDHSharedSecretHex(ephemeralPrivKeyBytes, userPubKeyBytes)
+// 	if err != nil {
+// 		log.Printf("❌ Step 4: Error calculating ECDH shared secret: %v\n", err)
+// 		return
+// 	}
+
+// 	sharedSecretBytes, err := hex.DecodeString(sharedSecretHex)
+// 	if err != nil {
+// 		log.Printf("❌ Step 4: Error decoding shared secret: %v\n", err)
+// 		return
+// 	}
+// 	log.Printf("✅ Step 4: Shared secret calculated (length: %d bytes)", len(sharedSecretBytes))
+
+// 	// Step 5: Generate random IV for AES-CBC
+// 	iv := make([]byte, 16) // AES block size is 16 bytes
+// 	if _, err := rand.Read(iv); err != nil {
+// 		log.Printf("❌ Step 5: Error generating IV: %v\n", err)
+// 		return
+// 	}
+// 	ivHex := hex.EncodeToString(iv)
+// 	log.Printf("🎲 Step 5: Generated IV: %s", ivHex)
+
+// 	// Step 6: Encrypt message using AES-CBC
+// 	log.Printf("🔐 Step 6: Encrypting message with AES-CBC...")
+// 	encryptedBytes, err := utils.EncryptAESCBC(sharedSecretBytes, []byte(message), iv)
+// 	if err != nil {
+// 		log.Printf("❌ Step 6: Error encrypting message: %v\n", err)
+// 		return
+// 	}
+// 	encryptedMessageBase64 := base64.StdEncoding.EncodeToString(encryptedBytes)
+// 	log.Printf("✅ Step 6: Message encrypted successfully (length: %d bytes)", len(encryptedBytes))
+
+// 	// Step 7: Save to log
+// 	err = saveEncryptedDataToLog(userWalletAddress.Hex(), phoneNumber, encryptedMessageBase64, ephemeralPubKeyHex, ivHex)
+// 	if err != nil {
+// 		log.Printf("⚠️ Warning: Could not write file to log folder: %v", err)
+// 	}
+
+// 	// Step 8: Decode ephemeral public key to bytes for transaction
+// 	ephemeralPubKeyBytes, err := hex.DecodeString(ephemeralPubKeyHex)
+// 	if err != nil {
+// 		log.Printf("❌ Step 8: Error decoding ephemeral public key: %v\n", err)
+// 		return
+// 	}
+
+// 	// Step 9: Load server private key
+// 	privateKey, err := crypto.HexToECDSA(privateKeyHex)
+// 	if err != nil {
+// 		log.Printf("❌ Step 9: Error loading private key: %v", err)
+// 		return
+// 	}
+// 	senderAddress := crypto.PubkeyToAddress(*privateKey.Public().(*ecdsa.PublicKey))
+// 	log.Printf("📤 Step 9: Sender address: %s", senderAddress.Hex())
+
+// 	// Step 10: Get nonce
+
+// 	// Step 13: Pack data for completeAuthentication
+// 	// Smart contract function signature:
+// 	// completeAuthentication(string memory phoneNumber, bytes memory encryptedMessage, bytes memory ephemeralPublicKey, bytes memory iv)
+// 	completeAuthData := packData(parsedABI, "completeAuthentication", phoneNumber, encryptedBytes, ephemeralPubKeyBytes)
+// 	log.Printf("📦 Step 13: Data packed successfully")
+
+// 	log.Printf("✍️ Step 14: Transaction signed successfully")
+// 	// fromAddress := common.HexToAddress("0xa620249dc17f23887226506b3eb260f4802a7efc") // Replace with actual address
+// 	relatedAddress := []common.Address{}
+// 	maxGas := uint64(5_000_000_000)
+// 	maxGasPrice := uint64(1_000_000_000)
+// 	timeUse := uint64(0)
+
+// 	// Step 15: Send transaction
+// 		callData := transaction.NewCallData(completeAuthData)
+
+// 		bData, err := callData.Marshal()
+// 		if err != nil {
+// 			logger.Error(fmt.Sprintf("Marshal calldata for %s failed", "migrateCode"), err)
+// 		}
+
+
+// 		receipt, err := client.SendTransactionWithDeviceKey(
+// 			fromAddress,
+// 			contractAddress,
+// 			big.NewInt(0),
+// 			bData,
+// 			relatedAddress,
+// 			maxGas,
+// 			maxGasPrice,
+// 			timeUse,
+// 		)
+// 		if receipt.Status() == pb.RECEIPT_STATUS_RETURNED {
+// 				log.Printf("✅ Step 15: Transaction sent successfully! ", )
+
+// 		}
+
+// }
 
 func packData(parsedABI abi.ABI, method string, args ...interface{}) []byte {
 	data, err := parsedABI.Pack(method, args...)

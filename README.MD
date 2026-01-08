@@ -35,6 +35,16 @@ curl -X POST "https://api.telegram.org/bot8267654371:AAFyljaL4bQ55W12x3b5e7WPJQn
         "text": 985872-0901328063"
       }'
 
+
+
+curl -X POST "https://api.telegram.org/bot8132349832:AAFyljaL4bQ55W12x3b5e7WPJQnb6XAqd2s/sendMessage" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "chat_id": "2137283886",
+        "text": 985872-0901328063"
+      }'
+
+
 lay chatID:
 curl -s "https://api.telegram.org/bot8267654371:AAFyljaL4bQ55W12x3b5e7WPJQnb6XAqd2s/getUpdates"
 

@@ -3,22 +3,18 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/mail"
-	"os"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-	// "github.com/joho/godotenv"
 	"github.com/meta-node-blockchain/verify_server/config"
 	"github.com/meta-node-blockchain/verify_server/utils"
-	"github.com/phires/go-guerrilla/backends"
-	guerrillaMail "github.com/phires/go-guerrilla/mail"
 	"github.com/meta-node-blockchain/meta-node/cmd/client"
 	c_config "github.com/meta-node-blockchain/meta-node/cmd/client/pkg/config"
 	service "github.com/meta-node-blockchain/verify_server/service"
-
 )
 
 // AppContext chứa tất cả dependencies
@@ -27,37 +23,28 @@ type AppContext struct {
 	AdminAddress common.Address
 	ContractAddr string
 	ContractABI  string
-	RpcURL    string
+	RpcURL       string
 }
 
 // NewAppContext khởi tạo AppContext từ config
 func NewAppContext() (*AppContext, error) {
-	// err := godotenv.Load()
-	// if err != nil {
-	// 	log.Println("⚠️  Warning: No .env file found")
-	// }
-
-	// rpcURL := os.Getenv("RPC_URL")
-	// contractAddr := os.Getenv("AUTHSC_ADDRESS")
-	// // contractABI := os.Getenv("CONTRACT_ABI")
-	// // ✅ ĐỌC ABI TỪ FILE JSON
-	// abiFilePath := os.Getenv("CONTRACT_ABI_FILE") // Ví dụ: "contracts/MyContract.json"
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("error loading config: %w", err)
 	}
+	
 	var contractABI string
 	abiFilePath := cfg.AuthAbiPath
 	contractAddr := cfg.AuthAddress
 	rpcURL := cfg.RpcURL
+	
 	if abiFilePath != "" {
-		// Đọc từ file
 		contractABI, err = utils.ReadABIFromFile(abiFilePath)
 		if err != nil {
 			return nil, fmt.Errorf("error reading ABI file: %w", err)
 		}
 		log.Printf("✅ Loaded ABI from file: %s", abiFilePath)
-	} 
+	}
 
 	metaClient, err := client.NewClient(
 		&c_config.ClientConfig{
@@ -75,7 +62,6 @@ func NewAppContext() (*AppContext, error) {
 	}
 
 	adminAddress := common.HexToAddress(cfg.AdminAddress)
-	
 	log.Println("✅ Meta-Node client initialized successfully")
 	
 	return &AppContext{
@@ -83,20 +69,36 @@ func NewAppContext() (*AppContext, error) {
 		AdminAddress: adminAddress,
 		ContractAddr: contractAddr,
 		ContractABI:  contractABI,
-		RpcURL:    rpcURL,
+		RpcURL:       rpcURL,
 	}, nil
 }
-
-
 
 // ============================================
 // AUTHENTICATION HANDLER
 // ============================================
 
+// func (ctx *AppContext) handleAuthenticationEmail(identifier string, otpString string) (bool, error) {
+// 	log.Printf("[Auth] 🔐 Processing authentication for: %s with OTP: %s", identifier, otpString)
+
+// 	service.CheckOTP(
+// 		ctx.AdminAddress,
+// 		ctx.MetaClient,
+// 		ctx.ContractAddr,
+// 		ctx.ContractABI,
+// 		ctx.RpcURL,
+// 		identifier,
+// 		otpString,
+// 		"email",
+// 	)
+
+// 	log.Printf("[Auth] ✅ Authentication request sent for: %s", identifier)
+// 	return true, nil
+// }
 func (ctx *AppContext) handleAuthenticationEmail(identifier string, otpString string) (bool, error) {
 	log.Printf("[Auth] 🔐 Processing authentication for: %s with OTP: %s", identifier, otpString)
 
-	service.CheckOTP(
+	// ✅ Nhận kết quả từ CheckOTP
+	result, err := service.CheckOTP(
 		ctx.AdminAddress,
 		ctx.MetaClient,
 		ctx.ContractAddr,
@@ -107,239 +109,461 @@ func (ctx *AppContext) handleAuthenticationEmail(identifier string, otpString st
 		"email",
 	)
 
-	log.Printf("[Auth] ✅ Authentication request sent for: %s", identifier)
+	if err != nil {
+		log.Printf("[Auth] ❌ Authentication failed: %v", err)
+		return false, fmt.Errorf("authentication failed: %w", err)
+	}
+
+	if result == nil {
+		log.Printf("[Auth] ❌ No result returned from CheckOTP")
+		return false, fmt.Errorf("no result from OTP validation")
+	}
+
+	log.Printf("[Auth] ✅ Authentication successful!")
+	log.Printf("[Auth]    - Public Key: %s", result.PublicKey)
+	log.Printf("[Auth]    - Wallet: %s", result.Wallet.Hex())
+	
 	return true, nil
 }
+// ============================================
+// INBOUND EMAIL WEBHOOK HANDLERS
+// ============================================
 
-func (ctx *AppContext) MakeReadEmailHandler() http.HandlerFunc {
+// InboundEmailData - Struct để parse email từ webhook
+type InboundEmailData struct {
+	From        string            `json:"from"`
+	To          string            `json:"to"`
+	Subject     string            `json:"subject"`
+	Text        string            `json:"text"`          // For some providers
+	TextBody    string            `json:"text_body"`     // ✅ Add this for your provider
+	HTML        string            `json:"html"`
+	HTMLBody    string            `json:"html_body"`     // ✅ Add this too
+	Headers     map[string]string `json:"headers"`
+	MessageID   string            `json:"message_id"`    // ✅ Optional but useful
+	RawEmail    string            `json:"raw_email"`
+	Attachments []interface{}     `json:"attachments"`   // ✅ Optional
+}
+func (ctx *AppContext) MakeInboundEmailWebhookHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		fileName := strings.TrimPrefix(r.URL.Path, "/emails/")
-		recipient := r.URL.Query().Get("recipient")
+		log.Println("📨 ========================================")
+		log.Println("📨 INCOMING EMAIL WEBHOOK")
+		log.Println("📨 ========================================")
 
-		if fileName == "" || recipient == "" {
-			http.Error(w, "Please provide fileName and recipient email in the URL", http.StatusBadRequest)
+		// Chỉ chấp nhận POST
+		if r.Method != http.MethodPost {
+			log.Printf("❌ Invalid method: %s", r.Method)
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		encryptedData, err := os.ReadFile(fileName)
+		// Đọc raw body
+		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "Failed to read encrypted email file", http.StatusInternalServerError)
+			log.Printf("❌ Error reading body: %v", err)
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
+		defer r.Body.Close()
 
-		password, err := utils.GeneratePassword(recipient)
-		if err != nil {
-			http.Error(w, "Failed to generate password for decryption", http.StatusInternalServerError)
-			return
-		}
-
-		decryptedRawEmail, err := utils.DecryptEmail(encryptedData, password)
-		if err != nil {
-			http.Error(w, "Failed to decrypt email", http.StatusInternalServerError)
-			return
-		}
-
-		parsedEmail, err := utils.ParseEmail(decryptedRawEmail)
-		if err != nil {
-			http.Error(w, "Failed to parse decrypted email", http.StatusInternalServerError)
-			return
-		}
-
-		msg, _ := mail.ReadMessage(strings.NewReader(decryptedRawEmail))
-		senderRaw := msg.Header.Get("From")
-		addr, err := mail.ParseAddress(senderRaw)
-		if err != nil {
-			log.Printf("Error parsing sender email: %v", err)
-			http.Error(w, "Invalid sender email format", http.StatusBadRequest)
-			return
-		}
-		cleanSenderEmail := addr.Address
-
-		cleanSubject := strings.TrimSpace(parsedEmail.Subject)
-		otpString := strings.TrimSpace(parsedEmail.Body)
-
-		fmt.Printf("\n--- DECRYPTED EMAIL DATA ---\n")
-		fmt.Printf("  Sender: %s\n", cleanSenderEmail)
-		fmt.Printf("  Recipient: %s\n", recipient)
-		fmt.Printf("  Subject: %s\n", cleanSubject)
-		fmt.Printf("  OTP: %s\n", otpString)
-		fmt.Println("----------------------------")
-
-		if cleanSubject == "" {
-			log.Println("🔐 Authentication email detected, calling Smart Contract...")
-			success, err := ctx.handleAuthenticationEmail(cleanSenderEmail, otpString)
-			if err != nil {
-				log.Printf("❌ Error calling smart contract: %v", err)
-				http.Error(w, "Failed to call smart contract: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			if success {
-				log.Println("✅ Smart Contract authentication successful!")
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]string{"status": "Verification successful"})
-				return
-			} else {
-				log.Println("❌ Smart Contract authentication failed.")
-				http.Error(w, "Email verification failed on contract", http.StatusUnauthorized)
-				return
-			}
-		}
-
+		// ✅ TRẢ RESPONSE NGAY LẬP TỨC - QUAN TRỌNG!
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"sender":    cleanSenderEmail,
-			"recipient": recipient,
-			"subject":   parsedEmail.Subject,
-			"body":      parsedEmail.Body,
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "accepted",
+			"message": "Email received successfully",
 		})
+
+		// ✅ XỬ LÝ EMAIL TRONG GOROUTINE (không block response)
+		go ctx.processIncomingEmail(bodyBytes, r.Header.Get("Content-Type"))
 	}
 }
 
-// ============================================
-// SMTP PROCESSOR FACTORY
-// ============================================
-type myFooConfig struct {
-		// SomeOption string `json:"some_option"` // Ví dụ về một cấu hình
+// ✅ Tách xử lý email ra hàm riêng
+func (ctx *AppContext) processIncomingEmail(bodyBytes []byte, contentType string) {
+	log.Printf("📦 Processing email asynchronously...")
+	log.Printf("📦 Raw Body Length: %d bytes", len(bodyBytes))
+
+	var emailData InboundEmailData
+
+	// Parse theo content type
+	if strings.Contains(contentType, "application/json") {
+		log.Println("🔍 Parsing as JSON...")
+		err := json.Unmarshal(bodyBytes, &emailData)
+		if err != nil {
+			log.Printf("❌ JSON parse error: %v", err)
+			return
+		}
+		
+		// ✅ Handle different field names
+		if emailData.Text == "" && emailData.TextBody != "" {
+			emailData.Text = emailData.TextBody
+		}
+		if emailData.HTML == "" && emailData.HTMLBody != "" {
+			emailData.HTML = emailData.HTMLBody
+		}
+	} else {
+		log.Printf("⚠️ Unsupported content type: %s", contentType)
+		return
 	}
-func (ctx *AppContext) CreateSMTPProcessor() func() backends.Decorator {
-	return func() backends.Decorator {
-		// config := &struct{}{}
-		config := &myFooConfig{}
 
-		initFunc := backends.InitializeWith(func(backendConfig backends.BackendConfig) error {
-			// Trích xuất cấu hình từ backendConfig
-			configType := backends.BaseConfig(&myFooConfig{})
-			bcfg, err := backends.Svc.ExtractConfig(backendConfig, configType)
+	log.Println("📧 ========================================")
+	log.Println("📧 PARSED EMAIL DATA:")
+	log.Println("📧 ========================================")
+	log.Printf("   From:    %s", emailData.From)
+	log.Printf("   To:      %s", emailData.To)
+	log.Printf("   Subject: %s", emailData.Subject)
+	log.Printf("   Text:    %s", emailData.Text)
+	log.Println("📧 ========================================")
+
+	// Parse email addresses
+	senderEmail, err := extractEmailAddress(emailData.From)
+	if err != nil {
+		log.Printf("❌ Invalid sender email: %v", err)
+		return
+	}
+
+	recipientEmail, err := extractEmailAddress(emailData.To)
+	if err != nil {
+		log.Printf("❌ Invalid recipient email: %v", err)
+		return
+	}
+
+	// Clean data
+	cleanSubject := strings.TrimSpace(emailData.Subject)
+	otpString := emailData.Text
+	if otpString == "" {
+		otpString = emailData.TextBody
+	}
+	// ✅ Loại bỏ TẤT CẢ whitespace characters
+	otpString = strings.TrimSpace(otpString)           // Trim đầu/cuối
+	otpString = strings.ReplaceAll(otpString, "\r\n", "") // Windows line ending
+	otpString = strings.ReplaceAll(otpString, "\n", "")   // Unix line ending
+	otpString = strings.ReplaceAll(otpString, "\r", "")   // Old Mac line ending
+	otpString = strings.ReplaceAll(otpString, " ", "")    // Spaces
+	otpString = strings.ReplaceAll(otpString, "\t", "")   // Tabs
+	otpString = strings.TrimSpace(otpString)           // Trim lại lần nữa để chắc chắn
+
+	log.Printf("   OTP/Body (raw):    '%s' (len: %d)", emailData.TextBody, len(emailData.TextBody))
+	log.Printf("   OTP/Body (cleaned): '%s' (len: %d)", otpString, len(otpString))
+
+	log.Println("🔍 ========================================")
+	log.Println("🔍 EXTRACTED DATA:")
+	log.Println("🔍 ========================================")
+	log.Printf("   Clean Sender:    %s", senderEmail)
+	log.Printf("   Clean Recipient: %s", recipientEmail)
+	log.Printf("   Clean Subject:   %s", cleanSubject)
+	log.Printf("   OTP/Body:        '%s' (len: %d)", otpString, len(otpString))
+	log.Println("🔍 ========================================")
+
+	// ============================================
+	// KIỂM TRA AUTHENTICATION EMAIL
+	// ============================================
+	if cleanSubject == "" {
+		log.Println("🔐 ========================================")
+		log.Println("🔐 AUTHENTICATION EMAIL DETECTED!")
+		log.Println("🔐 ========================================")
+		log.Printf("🔐 Sender: %s", senderEmail)
+		log.Printf("🔐 OTP: %s", otpString)
+		
+		success, err := ctx.handleAuthenticationEmail(senderEmail, otpString)
+		if err != nil {
+			log.Printf("❌ Error processing authentication: %v", err)
+			return
+		}
+		if success {
+			log.Println("✅ ========================================")
+			log.Println("✅ AUTHENTICATION SUCCESSFUL!")
+			log.Println("✅ ========================================")
+		}
+		return
+	}
+
+	// ============================================
+	// EMAIL THƯỜNG
+	// ============================================
+	log.Println("📧 Normal email received, storing...")
+	
+	password, err := utils.GeneratePassword(recipientEmail)
+	if err != nil {
+		log.Printf("⚠️  Warning: Failed to generate password: %v", err)
+	} else {
+		emailContent := fmt.Sprintf("From: %s\nTo: %s\nSubject: %s\n\n%s", 
+			emailData.From, emailData.To, emailData.Subject, emailData.Text)
+		
+		encryptedEmail, err := utils.EncryptEmail(emailContent, password)
+		if err != nil {
+			log.Printf("⚠️  Warning: Failed to encrypt email: %v", err)
+		} else {
+			err = utils.SaveEmailLocally(encryptedEmail)
 			if err != nil {
-				return err
+				log.Printf("⚠️  Warning: Failed to save email: %v", err)
+			} else {
+				log.Println("✅ Email encrypted and saved successfully")
 			}
-			*config = *(bcfg.(*myFooConfig))
-			return nil
-		})
-
-		backends.Svc.AddInitializer(initFunc)
-
-		return func(p backends.Processor) backends.Processor {
-			return backends.ProcessWith(func(e *guerrillaMail.Envelope, task backends.SelectTask) (backends.Result, error) {
-
-				if task == backends.TaskValidateRcpt {
-					if len(e.RcptTo) == 0 {
-						return backends.NewResult("550 No recipient provided"), nil
-					}
-					recipient := e.RcptTo[0].String()
-					recipientName := strings.Split(recipient, "@")[0]
-					
-					if recipientName == "" || !utils.IsValidRecipientName(recipientName) {
-						log.Printf("Invalid recipient format: %s", recipient)
-						return backends.NewResult("554 Invalid recipient email format"), nil
-					}
-
-					log.Printf("✅ Recipient validated: %s", recipientName)
-					return backends.NewResult("250 Recipient OK"), nil
-				}
-
-				if task == backends.TaskSaveMail {
-					if len(e.RcptTo) == 0 {
-						return backends.NewResult("550 No recipient provided"), nil
-					}
-					
-					recipient := e.RcptTo[0].String()
-					recipientName := strings.Split(recipient, "@")[0]
-					
-					if recipientName == "" {
-						log.Printf("Invalid recipient format: %s", recipient)
-						return backends.NewResult("554 Invalid recipient email format"), nil
-					}
-
-					ip := e.RemoteIP
-					sender := e.MailFrom.String()
-					senderDomain := utils.ExtractDomain(sender)
-
-					if len(e.Data.String()) > 1024*1024 {
-						return backends.NewResult("552 Error: Message size exceeds 1MB limit"), nil
-					}
-
-					dkimResult, err := utils.CheckDKIM([]byte(e.Data.String()), senderDomain)
-					if ip != "127.0.0.1" && !dkimResult {
-						if err != nil {
-							log.Printf("DKIM error: %v", err)
-						}
-
-						log.Printf("DKIM failed, fallback to SPF and DMARC checks")
-
-						spfResult, spfErr := utils.CheckSPF(ip, senderDomain)
-						if spfErr != nil || !spfResult {
-							return backends.NewResult(fmt.Sprintf("554 SPF failed: %v", spfErr)), nil
-						}
-
-						dmarcResult, dmarcErr := utils.CheckDMARC(senderDomain)
-						if dmarcErr != nil || !dmarcResult {
-							return backends.NewResult(fmt.Sprintf("554 DMARC failed: %v", dmarcErr)), nil
-						}
-					}
-
-					password, err := utils.GeneratePassword(recipient)
-					if err != nil {
-						log.Printf("Error generating password: %v", err)
-						return backends.NewResult("554 Error generating password"), nil
-					}
-
-					encryptedEmail, err := utils.EncryptEmail(e.Data.String(), password)
-					if err != nil {
-						log.Printf("Error encrypting email: %v", err)
-						return backends.NewResult("554 Error encrypting email"), nil
-					}
-
-					err = utils.SaveEmailLocally(encryptedEmail)
-					if err != nil {
-						log.Printf("Error saving email locally: %v", err)
-						return backends.NewResult("554 Error saving email locally"), nil
-					}
-
-					parsedEmail, err := utils.ParseEmail(e.Data.String())
-					if err != nil {
-						log.Printf("Error parsing email: %v", err)
-						return backends.NewResult("554 Error parsing email"), nil
-					}
-
-					addr, err := mail.ParseAddress(e.MailFrom.String())
-					if err != nil {
-						log.Printf("Error parsing sender address: %v", err)
-						return backends.NewResult("554 Invalid sender address"), nil
-					}
-					senderEmail := addr.Address
-
-					cleanSubject := strings.TrimSpace(parsedEmail.Subject)
-					otpString := strings.TrimSpace(parsedEmail.Body)
-
-					if cleanSubject == "" {
-						log.Printf(">>> 🔐 Authentication email detected from [%s]", senderEmail)
-						
-						success, err := ctx.handleAuthenticationEmail(senderEmail, otpString)
-						if err != nil {
-							log.Printf("--> ❌ Error processing authentication for [%s]: %v", senderEmail, err)
-							return backends.NewResult("554 Error processing authentication"), nil
-						}
-						
-						if success {
-							log.Printf("--> ✅ Authentication request sent for [%s]", senderEmail)
-						}
-
-						return backends.NewResult("250 OK: Authentication request received"), nil
-					}
-
-					log.Println(">>> Received normal email, continuing processing...")
-
-					subject := parsedEmail.Subject
-					body := utils.SanitizeEmailHTML(parsedEmail.Body)
-
-					log.Printf("📧 Email received - Subject: %s, Body length: %d bytes", subject, len(body))
-					return backends.NewResult("250 OK: Email received and stored successfully"), nil
-				}
-				
-				return p.Process(e, task)
-			})
 		}
 	}
+
+	log.Println("✅ ========================================")
+	log.Println("✅ EMAIL PROCESSING COMPLETED")
+	log.Println("✅ ========================================")
+}
+// MakeInboundEmailWebhookHandler - Handler nhận email qua HTTP POST
+// func (ctx *AppContext) MakeInboundEmailWebhookHandler() http.HandlerFunc {
+// 	return func(w http.ResponseWriter, r *http.Request) {
+// 		log.Println("📨 ========================================")
+// 		log.Println("📨 INCOMING EMAIL WEBHOOK")
+// 		log.Println("📨 ========================================")
+
+// 		// Chỉ chấp nhận POST
+// 		if r.Method != http.MethodPost {
+// 			log.Printf("❌ Invalid method: %s", r.Method)
+// 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+// 			return
+// 		}
+
+// 		// Log headers
+// 		log.Println("📋 Request Headers:")
+// 		for name, values := range r.Header {
+// 			for _, value := range values {
+// 				log.Printf("   %s: %s", name, value)
+// 			}
+// 		}
+
+// 		// Đọc raw body
+// 		bodyBytes, err := io.ReadAll(r.Body)
+// 		if err != nil {
+// 			log.Printf("❌ Error reading body: %v", err)
+// 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+// 			return
+// 		}
+// 		defer r.Body.Close()
+
+// 		log.Printf("📦 Raw Body Length: %d bytes", len(bodyBytes))
+// 		log.Printf("📦 Raw Body Content:\n%s", string(bodyBytes))
+
+// 		// Parse Content-Type để xử lý đúng format
+// 		contentType := r.Header.Get("Content-Type")
+// 		log.Printf("📋 Content-Type: %s", contentType)
+
+// 		var emailData InboundEmailData
+
+// 		// ============================================
+// 		// XỬ LÝ THEO ĐỊNH DẠNG
+// 		// ============================================
+
+// 		if strings.Contains(contentType, "application/json") {
+// 			// Format 1: JSON (SendGrid Inbound Parse với JSON)
+// 			log.Println("🔍 Parsing as JSON...")
+// 			err = json.Unmarshal(bodyBytes, &emailData)
+// 			if err != nil {
+// 				log.Printf("❌ JSON parse error: %v", err)
+// 				http.Error(w, "Invalid JSON format", http.StatusBadRequest)
+// 				return
+// 			}
+// 			// ✅ Handle different field names from different email providers
+// 			if emailData.Text == "" && emailData.TextBody != "" {
+// 				emailData.Text = emailData.TextBody
+// 			}
+// 			if emailData.HTML == "" && emailData.HTMLBody != "" {
+// 				emailData.HTML = emailData.HTMLBody
+// 			}
+// 		} else if strings.Contains(contentType, "multipart/form-data") || strings.Contains(contentType, "application/x-www-form-urlencoded") {
+// 			// Format 2: Form data (SendGrid/Mailgun default)
+// 			log.Println("🔍 Parsing as Form Data...")
+// 			err = r.ParseMultipartForm(10 << 20) // 10MB max
+// 			if err != nil {
+// 				log.Printf("❌ Form parse error: %v", err)
+// 				http.Error(w, "Failed to parse form", http.StatusBadRequest)
+// 				return
+// 			}
+
+// 			emailData = InboundEmailData{
+// 				From:    r.FormValue("from"),
+// 				To:      r.FormValue("to"),
+// 				Subject: r.FormValue("subject"),
+// 				Text:    r.FormValue("text"),
+// 				HTML:    r.FormValue("html"),
+// 			}
+
+// 			// Log tất cả form fields
+// 			log.Println("📋 Form Fields:")
+// 			for key, values := range r.Form {
+// 				log.Printf("   %s: %v", key, values)
+// 			}
+
+// 		} else {
+// 			// Format 3: Raw email
+// 			log.Println("🔍 Treating as raw email...")
+// 			emailData.RawEmail = string(bodyBytes)
+// 		}
+
+// 		// ============================================
+// 		// LOG DỮ LIỆU EMAIL
+// 		// ============================================
+
+// 		log.Println("📧 ========================================")
+// 		log.Println("📧 PARSED EMAIL DATA:")
+// 		log.Println("📧 ========================================")
+// 		log.Printf("   From:    %s", emailData.From)
+// 		log.Printf("   To:      %s", emailData.To)
+// 		log.Printf("   Subject: %s", emailData.Subject)
+// 		log.Printf("   Text:    %s", emailData.Text)
+// 		log.Printf("   HTML:    %s", emailData.HTML)
+// 		if emailData.RawEmail != "" {
+// 			log.Printf("   Raw Email (first 500 chars): %s", 
+// 				truncateString(emailData.RawEmail, 500))
+// 		}
+// 		log.Println("📧 ========================================")
+
+// 		// ============================================
+// 		// XỬ LÝ EMAIL
+// 		// ============================================
+
+// 		// Parse email address từ "From" field
+// 		senderEmail, err := extractEmailAddress(emailData.From)
+// 		if err != nil {
+// 			log.Printf("❌ Invalid sender email: %v", err)
+// 			http.Error(w, "Invalid sender email format", http.StatusBadRequest)
+// 			return
+// 		}
+
+// 		recipientEmail, err := extractEmailAddress(emailData.To)
+// 		if err != nil {
+// 			log.Printf("❌ Invalid recipient email: %v", err)
+// 			http.Error(w, "Invalid recipient email format", http.StatusBadRequest)
+// 			return
+// 		}
+
+// 		cleanSubject := strings.TrimSpace(emailData.Subject)
+// 		// ✅ Extract and clean OTP - remove newlines and whitespace
+// 		otpString := strings.TrimSpace(emailData.Text)
+// 		otpString = strings.ReplaceAll(otpString, "\r\n", "")
+// 		otpString = strings.ReplaceAll(otpString, "\n", "")
+// 		otpString = strings.ReplaceAll(otpString, "\r", "")
+// 		otpString = strings.TrimSpace(otpString)
+
+// 		log.Println("🔍 ========================================")
+// 		log.Println("🔍 EXTRACTED DATA:")
+// 		log.Println("🔍 ========================================")
+// 		log.Printf("   Clean Sender:    %s", senderEmail)
+// 		log.Printf("   Clean Recipient: %s", recipientEmail)
+// 		log.Printf("   Clean Subject:   %s", cleanSubject)
+// 		log.Printf("   OTP/Body:        %s", otpString)
+// 		log.Println("🔍 ========================================")
+
+// 		// ============================================
+// 		// KIỂM TRA AUTHENTICATION EMAIL (subject rỗng)
+// 		// ============================================
+
+// 		if cleanSubject == "" {
+// 			log.Println("🔐 ========================================")
+// 			log.Println("🔐 AUTHENTICATION EMAIL DETECTED!")
+// 			log.Println("🔐 ========================================")
+// 			log.Printf("🔐 Sender: %s", senderEmail)
+// 			log.Printf("🔐 OTP: %s", otpString)
+			
+// 			success, err := ctx.handleAuthenticationEmail(senderEmail, otpString)
+// 			if err != nil {
+// 				log.Printf("❌ Error processing authentication: %v", err)
+				
+// 				// ✅ Return error details to client
+// 				w.Header().Set("Content-Type", "application/json")
+// 				w.WriteHeader(http.StatusBadRequest)
+// 				json.NewEncoder(w).Encode(map[string]string{
+// 					"status":  "error",
+// 					"message": err.Error(),
+// 					"sender":  senderEmail,
+// 				})
+// 				return
+// 			}
+// 			if success {
+// 				log.Println("✅ ========================================")
+// 				log.Println("✅ AUTHENTICATION SUCCESSFUL!")
+// 				log.Println("✅ ========================================")
+				
+// 				w.Header().Set("Content-Type", "application/json")
+// 				json.NewEncoder(w).Encode(map[string]string{
+// 					"status":  "success",
+// 					"message": "Authentication email processed successfully",
+// 					"sender":  senderEmail,
+// 				})
+// 				return
+// 			}
+// 		}
+
+// 		// ============================================
+// 		// EMAIL THƯỜNG (có subject)
+// 		// ============================================
+
+// 		log.Println("📧 Normal email received, storing...")
+		
+// 		// Encrypt và lưu email (optional)
+// 		password, err := utils.GeneratePassword(recipientEmail)
+// 		if err != nil {
+// 			log.Printf("⚠️  Warning: Failed to generate password: %v", err)
+// 		} else {
+// 			emailContent := fmt.Sprintf("From: %s\nTo: %s\nSubject: %s\n\n%s", 
+// 				emailData.From, emailData.To, emailData.Subject, emailData.Text)
+			
+// 			encryptedEmail, err := utils.EncryptEmail(emailContent, password)
+// 			if err != nil {
+// 				log.Printf("⚠️  Warning: Failed to encrypt email: %v", err)
+// 			} else {
+// 				err = utils.SaveEmailLocally(encryptedEmail)
+// 				if err != nil {
+// 					log.Printf("⚠️  Warning: Failed to save email: %v", err)
+// 				} else {
+// 					log.Println("✅ Email encrypted and saved successfully")
+// 				}
+// 			}
+// 		}
+
+// 		// Response
+// 		w.Header().Set("Content-Type", "application/json")
+// 		json.NewEncoder(w).Encode(map[string]interface{}{
+// 			"status":    "success",
+// 			"message":   "Email received and processed",
+// 			"sender":    senderEmail,
+// 			"recipient": recipientEmail,
+// 			"subject":   cleanSubject,
+// 		})
+
+// 		log.Println("✅ ========================================")
+// 		log.Println("✅ EMAIL PROCESSING COMPLETED")
+// 		log.Println("✅ ========================================")
+// 	}
+// }
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+// extractEmailAddress - Trích xuất email từ string "Name <email@domain.com>"
+func extractEmailAddress(emailStr string) (string, error) {
+	emailStr = strings.TrimSpace(emailStr)
+	
+	// Nếu đã là email thuần
+	if !strings.Contains(emailStr, "<") {
+		addr, err := mail.ParseAddress(emailStr)
+		if err != nil {
+			return emailStr, nil // Trả về nguyên bản nếu parse lỗi
+		}
+		return addr.Address, nil
+	}
+	
+	// Parse "Name <email@domain.com>"
+	addr, err := mail.ParseAddress(emailStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid email format: %w", err)
+	}
+	
+	return addr.Address, nil
+}
+
+// truncateString - Cắt string cho logging
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "... (truncated)"
 }

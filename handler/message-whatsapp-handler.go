@@ -16,7 +16,21 @@ import (
 )
 
 func ReceiveMessageWhatsapp(fromAddress common.Address ,client *client.Client,contractAddress string, contractABI string, INFURAL_URL string) http.HandlerFunc {
+	fmt.Println("aaaaaaaaaa")
 	return func(w http.ResponseWriter, r *http.Request) {
+		log.Println("📱 ========================================")
+        log.Println("📱 WHATSAPP WEBHOOK RECEIVED")
+        log.Println("📱 ========================================")
+        log.Printf("📱 Method: %s", r.Method)
+        log.Printf("📱 URL: %s", r.URL.String())
+        
+        // Log ALL headers
+        log.Println("📋 Headers:")
+        for name, values := range r.Header {
+            for _, value := range values {
+                log.Printf("   %s: %s", name, value)
+            }
+        }
 		// Đọc dữ liệu JSON từ request body
 		body, err := io.ReadAll(r.Body)
 		if err != nil {

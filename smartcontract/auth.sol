@@ -234,13 +234,14 @@ contract AuthOTP {
         OTP storage request = OTPs[_identifier];
 
         require(request.OTP == _otp, "Invalid OTP");
-        require(!request.verified, "Already verified");
+        require(!request.verified || authenticationHashes[userWallet] != bytes32(0), "Already verified");
         require(block.timestamp <= request.timeRequest + 300, "OTP expired");
 
         wallet = identifierToWallet[_identifier];
         require(wallet != address(0), "Wallet not linked");
 
         if (request.method == TypeMethod.Email) {
+            require(verificationStates[userWallet].phoneVerified,"need to verify phone in advance");
             // ✅ EMAIL
             verificationStates[wallet].emailVerified = true;
             emit EmailVerified(wallet, _identifier);
@@ -264,7 +265,7 @@ contract AuthOTP {
         bytes memory _encryptedSecretKey
     ) public {
         // OTP storage request = OTPs[_identifier];
-        // require(request.verified, "OTP not verified yet.");
+        // require(request.verified, "Already verified");
 
         address userWallet = identifierToWallet[_identifier];
         require(userWallet != address(0), "Identifier not linked to any wallet for this session.");
