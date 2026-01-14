@@ -1,4 +1,5 @@
 package model
+import "github.com/meta-node-blockchain/meta-node/types"
 type ParsedEmail struct {
 	Subject     string
 	Body        string
@@ -10,4 +11,8 @@ type Attachment struct {
 	ContentID          string
 	ContentType        string
 	Data               []byte
+}
+type ResultData struct {
+    Receipt types.Receipt
+    Err     error
 }

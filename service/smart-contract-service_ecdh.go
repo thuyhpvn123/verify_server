@@ -1,34 +1,40 @@
 package service
 
 import (
-	// "crypto/ecdsa"
+	"context"
+	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	utils "github.com/meta-node-blockchain/verify_server/utils"
-
-	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-
-	// "github.com/ethereum/go-ethereum/ethclient"
-	// "github.com/ethereum/go-ethereum/rpc"
-	"github.com/meta-node-blockchain/meta-node/cmd/client"
-	// "github.com/meta-node-blockchain/meta-node/pkg/logger"
-	pb "github.com/meta-node-blockchain/meta-node/pkg/proto"
-
-	"github.com/meta-node-blockchain/meta-node/pkg/transaction"
-
+	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
+	
+	"github.com/meta-node-blockchain/verify_server/contracts" // ← Your abigen package
+	"github.com/meta-node-blockchain/verify_server/utils"
 )
+
+// ============================================================================
+// 🔧 TYPES
+// ============================================================================
+
+type ValidateOTPResult struct {
+	PublicKey string
+	Wallet    common.Address
+}
 
 type LogData struct {
 	UserWalletAddress      string `json:"userWalletAddress"`
@@ -39,415 +45,401 @@ type LogData struct {
 	Timestamp              string `json:"timestamp"`
 }
 
-type ValidateOTPResult struct {
-	PublicKey string
-	Wallet    common.Address
-}
-// Trong service/check_otp.go
+// ============================================================================
+// 📞 CHECK OTP - Using abigen
+// ============================================================================
 
-// Thay đổi signature để return result
-func CheckOTP(fromAddress common.Address, client *client.Client, contractAddress string, contractABI string, RPC_HTTP_URL string, phoneNumber string, OTP string, botID string) (*ValidateOTPResult, error) {
-	parsedABI, err := abi.JSON(strings.NewReader(contractABI))
+func CheckOTP(
+	ctx context.Context,
+	privateKey *ecdsa.PrivateKey,
+	contractAddress common.Address,
+	rpcURL string,
+	phoneNumber string,
+	otp string,
+	botID string,
+) (*ValidateOTPResult, error) {
+	
+	// ============================================================
+	// ✅ Create immutable copies
+	// ============================================================
+	phoneNumberCopy := strings.Clone(phoneNumber)
+	otpCopy := strings.Clone(otp)
+	botIDCopy := strings.Clone(botID)
+	
+	if botIDCopy == "" {
+		return nil, fmt.Errorf("botID is empty")
+	}
+	
+	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Printf("🔍 CheckOTP START")
+	log.Printf("   Phone: '%s'", phoneNumberCopy)
+	log.Printf("   OTP: '%s'", otpCopy)
+	log.Printf("   BotID: '%s'", botIDCopy)
+	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	// ============================================================
+	// 🌐 Connect to blockchain
+	// ============================================================
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+		Timeout: 30 * time.Second,
+	}
+	
+	rpcClient, err := rpc.DialHTTPWithClient(rpcURL, httpClient)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse ABI: %w", err)
+		return nil, fmt.Errorf("failed to create RPC client: %w", err)
+	}
+	
+	client := ethclient.NewClient(rpcClient)
+	defer client.Close()
+
+	// ============================================================
+	// 🔑 Setup transactor
+	// ============================================================
+	publicKey := privateKey.Public().(*ecdsa.PublicKey)
+	fromAddress := crypto.PubkeyToAddress(*publicKey)
+	
+	chainID := big.NewInt(991) // Your chain ID
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transactor: %w", err)
 	}
 
-	uintOtp, err := utils.StringToUint256(OTP)
+	auth.From = fromAddress
+	auth.Value = big.NewInt(0)
+	auth.GasLimit = uint64(5_000_000)
+	auth.GasPrice = big.NewInt(1_000_000_000) // 1 gwei
+
+	// ============================================================
+	// 📜 Initialize contract
+	// ============================================================
+	instance, err := contract.NewContract(contractAddress, client)
 	if err != nil {
-		return nil, fmt.Errorf("error converting OTP to uint256: %w", err)
+		return nil, fmt.Errorf("failed to init contract: %w", err)
 	}
 
-	verifyOTPData, err := parsedABI.Pack("validateOTP", uintOtp, phoneNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to pack ABI: %w", err)
+	// ============================================================
+	// 🔢 Convert OTP to uint256
+	// ============================================================
+	otpBigInt, ok := new(big.Int).SetString(otpCopy, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid OTP format")
 	}
 
-	toAddress := common.HexToAddress(contractAddress)
-	relatedAddress := []common.Address{}
-	maxGas := uint64(5_000_000_000)
-	maxGasPrice := uint64(1_000_000_000)
-	timeUse := uint64(0)
-
-	callData := transaction.NewCallData(verifyOTPData)
-
-	bData, err := callData.Marshal()
-	if err != nil {
-		return nil, fmt.Errorf("marshal calldata failed: %w", err)
-	}
-
-	log.Println("🔄 Sending validateOTP transaction to blockchain...")
-
-	receipt, err := client.SendTransactionWithDeviceKey(
-		fromAddress,
-		toAddress,
-		big.NewInt(0),
-		bData,
-		relatedAddress,
-		maxGas,
-		maxGasPrice,
-		timeUse,
-	)
+	// ============================================================
+	// 📤 Send validateOTP transaction
+	// ============================================================
+	log.Printf("🔄 [%s] Sending validateOTP (botID=%s)...", phoneNumberCopy, botIDCopy)
+	startTime := time.Now()
+	
+	tx, err := instance.ValidateOTP(auth, otpBigInt, phoneNumberCopy)
 	if err != nil {
 		return nil, fmt.Errorf("transaction failed: %w", err)
 	}
 
-	log.Printf("📝 Transaction receipt status: %v", receipt.Status())
+	log.Printf("📝 [%s] Tx hash: %s", phoneNumberCopy, tx.Hash().Hex())
 
-	// ✅ Check receipt status
-	if receipt.Status() != pb.RECEIPT_STATUS_RETURNED {
-		return nil, fmt.Errorf("transaction failed with status: %v", receipt.Status())
-	}
+	// ============================================================
+	// ⏳ Wait for transaction to be mined
+	// ============================================================
+	ctxTimeout, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
 
-	log.Println("✅ Transaction successful, unpacking result...")
-
-	// Unpack result
-	var decodedResult ValidateOTPResult
-	err = parsedABI.UnpackIntoInterface(&decodedResult, "validateOTP", receipt.Return())
+	receipt, err := bind.WaitMined(ctxTimeout, client, tx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unpack result: %w", err)
+		return nil, fmt.Errorf("wait mined failed: %w", err)
 	}
 
-	log.Printf("✅ Decoded PublicKey: %s", decodedResult.PublicKey)
-	log.Printf("✅ Decoded Wallet Address: %s", decodedResult.Wallet.Hex())
+	elapsed := time.Since(startTime)
+	log.Printf("⏱️  [%s] Transaction completed in %v", phoneNumberCopy, elapsed)
 
-	// ✅ Call completeAuthentication if email
-	if botID == "email" {
-		log.Println("🔐 Calling completeAuthentication...")
-		err = CallCompleteAuthentication(
-			fromAddress,
-			client,
-			parsedABI,
-			toAddress,
-			phoneNumber,
-			decodedResult.PublicKey,
-			"72a147b91248b0396f34d2cebf5d9817336163f944d87bf40e66cddd06bddf0e", // TODO: Move to config
-			decodedResult.Wallet,
-		)
-		if err != nil {
-			log.Printf("⚠️ Warning: completeAuthentication failed: %v", err)
-			// Don't return error here, OTP validation was successful
-		} else {
-			log.Println("✅ completeAuthentication successful")
+	// ============================================================
+	// ✅ Check receipt status
+	// ============================================================
+	if receipt.Status != 1 {
+		return nil, fmt.Errorf("transaction failed with status: %d", receipt.Status)
+	}
+
+	log.Printf("✅ [%s] Transaction SUCCESS", phoneNumberCopy)
+	log.Printf("📦 [%s] Block: %d, Gas used: %d", phoneNumberCopy, receipt.BlockNumber.Uint64(), receipt.GasUsed)
+
+	// ============================================================
+	// 📖 Parse return value from logs (if available)
+	// ============================================================
+	var result ValidateOTPResult
+	
+	// Parse OTPValidated event
+	// for _, vLog := range receipt.Logs {
+	// 	// Check if this is OTPValidated event
+	// 	// event, err := instance.ParseOTPValidated(*vLog)
+	// 	// if err != nil {
+	// 	// 	continue // Not the event we're looking for
+	// 	// }
+		
+	// 	result.PublicKey = event.PublicKey
+	// 	result.Wallet = event.Wallet
+		
+	// 	log.Printf("✅ [%s] PublicKey: %s", phoneNumberCopy, result.PublicKey)
+	// 	log.Printf("✅ [%s] Wallet: %s", phoneNumberCopy, result.Wallet.Hex())
+	// 	break
+	// }
+	found := false
+
+	for _, vLog := range receipt.Logs {
+
+		// 1️⃣ PHONE (Telegram / WhatsApp)
+		if ev, err := instance.ParseStepVerified(*vLog); err == nil {
+			result.Wallet = ev.Wallet
+			callOpts := &bind.CallOpts{
+				From:    fromAddress,
+				Context: context.Background(),
+			}
+
+			kq, err := instance.OTPs(callOpts,phoneNumberCopy)
+			if err != nil {
+				log.Printf("error on get OTPs", err)
+				return &result, err
+			}
+			
+			result.PublicKey = kq.PublicKey
+			found = true
+
+			log.Printf("✅ [%s] StepVerified", phoneNumberCopy)
+			log.Printf("   Wallet: %s", ev.Wallet.Hex())
+			break
+		}
+
+		// 2️⃣ EMAIL
+		if ev, err := instance.ParseEmailVerified(*vLog); err == nil {
+			result.Wallet = ev.Wallet
+			callOpts := &bind.CallOpts{
+				From:    fromAddress,
+				Context: context.Background(),
+			}
+			kq, err := instance.OTPs(callOpts,phoneNumberCopy)
+			if err != nil {
+				log.Println("error on get OTPs", err)
+				return &result, err
+			}
+			
+			result.PublicKey = kq.PublicKey
+			found = true
+
+			log.Printf("✅ [%s] EmailVerified", phoneNumberCopy)
+			log.Printf("   Wallet: %s", ev.Wallet.Hex())
+			break
 		}
 	}
 
-	return &decodedResult, nil
-}
-// Thêm return error
-func CallCompleteAuthentication(fromAddress common.Address, client *client.Client, parsedABI abi.ABI, contractAddress common.Address, phoneNumber, publicKey, privateKeyHex string, userWalletAddress common.Address) error {
-	// Step 1: Create message
-	message := fmt.Sprintf("Wallet address: %s is authorized", userWalletAddress.Hex())
-	log.Printf("📝 Step 1: Created message: %s", message)
+	if !found {
+		return nil, fmt.Errorf("no StepVerified / EmailVerified event found")
+	}
+	if result.Wallet == (common.Address{}) {
+		return nil, fmt.Errorf("failed to parse OTPValidated event")
+	}
 
-	// Step 2: Generate ephemeral key pair
+	// ============================================================
+	// 🔐 Branch logic based on botID
+	// ============================================================
+	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Printf("🔍 BRANCHING DECISION")
+	log.Printf("   BotID: '%s'", botIDCopy)
+	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	switch botIDCopy {
+	case "telegram":
+		log.Printf("ℹ️ [%s] Telegram flow - skip completeAuth", phoneNumberCopy)
+		
+	case "email":
+		log.Printf("ℹ️ [%s] Email flow - calling completeAuth", phoneNumberCopy)
+		
+		err = CompleteAuthentication(
+			privateKey,
+			contractAddress,
+			client,
+			instance,
+			phoneNumberCopy,
+			result.PublicKey,
+			result.Wallet,
+		)
+		
+		if err != nil {
+			log.Printf("⚠️ [%s] completeAuth failed: %v", phoneNumberCopy, err)
+			return &result, err
+		}
+		
+		log.Printf("✅ [%s] completeAuth successful", phoneNumberCopy)
+		
+	default:
+		log.Printf("⚠️ [%s] Unknown botID: '%s'", phoneNumberCopy, botIDCopy)
+	}
+
+	return &result, nil
+}
+
+// ============================================================================
+// 🔐 COMPLETE AUTHENTICATION
+// ============================================================================
+
+func CompleteAuthentication(
+	privateKey *ecdsa.PrivateKey,
+	contractAddress common.Address,
+	client *ethclient.Client,
+	instance *contract.Contract,
+	phoneNumber string,
+	publicKey string,
+	userWalletAddress common.Address,
+) error {
+	fmt.Println("publicKey la:",publicKey)
+	log.Printf("═══════════════════════════════════════")
+	log.Printf("🔐 CompleteAuthentication START")
+	log.Printf("   Phone: '%s'", phoneNumber)
+	log.Printf("   Wallet: '%s'", userWalletAddress.Hex())
+	log.Printf("═══════════════════════════════════════")
+
+	message := fmt.Sprintf("Wallet address: %s is authorized", userWalletAddress.Hex())
+
+	// ============================================================
+	// 🔑 Generate ephemeral key pair
+	// ============================================================
 	ephemeralPrivKey, err := crypto.GenerateKey()
 	if err != nil {
-		return fmt.Errorf("error generating ephemeral key: %w", err)
+		return fmt.Errorf("error generating key: %w", err)
 	}
 
 	ephemeralPubKey := crypto.FromECDSAPub(&ephemeralPrivKey.PublicKey)
 	ephemeralPubKeyHex := hex.EncodeToString(ephemeralPubKey)
 	ephemeralPrivKeyBytes := crypto.FromECDSA(ephemeralPrivKey)
 
-	log.Printf("🔑 Step 2: Generated ephemeral key pair")
+	log.Printf("🔑 Ephemeral key generated: %s...", ephemeralPubKeyHex[:16])
 
-	// Step 3: Decode user's public key
+	// ============================================================
+	// 🔐 Compute ECDH shared secret
+	// ============================================================
 	userPubKeyBytes, err := hex.DecodeString(strings.TrimPrefix(publicKey, "0x"))
 	if err != nil {
-		return fmt.Errorf("error decoding user public key: %w", err)
+		return fmt.Errorf("error decoding public key: %w", err)
 	}
-	log.Printf("🔍 Step 3: Decoded user public key (length: %d bytes)", len(userPubKeyBytes))
 
-	// Step 4: Calculate shared secret using ECDH
-	log.Printf("🔐 Step 4: Calculating ECDH shared secret...")
 	sharedSecretHex, err := utils.ECDHSharedSecretHex(ephemeralPrivKeyBytes, userPubKeyBytes)
 	if err != nil {
-		return fmt.Errorf("error calculating ECDH shared secret: %w", err)
+		return fmt.Errorf("error ECDH: %w", err)
 	}
 
 	sharedSecretBytes, err := hex.DecodeString(sharedSecretHex)
 	if err != nil {
-		return fmt.Errorf("error decoding shared secret: %w", err)
+		return fmt.Errorf("error decoding secret: %w", err)
 	}
-	log.Printf("✅ Step 4: Shared secret calculated (length: %d bytes)", len(sharedSecretBytes))
 
-	// Step 5: Generate random IV for AES-CBC
+	log.Printf("🔐 Shared secret computed")
+
+	// ============================================================
+	// 🔒 Encrypt message
+	// ============================================================
 	iv := make([]byte, 16)
 	if _, err := rand.Read(iv); err != nil {
 		return fmt.Errorf("error generating IV: %w", err)
 	}
-	ivHex := hex.EncodeToString(iv)
-	log.Printf("🎲 Step 5: Generated IV: %s", ivHex)
 
-	// Step 6: Encrypt message using AES-CBC
-	log.Printf("🔐 Step 6: Encrypting message with AES-CBC...")
 	encryptedBytes, err := utils.EncryptAESCBC(sharedSecretBytes, []byte(message), iv)
 	if err != nil {
-		return fmt.Errorf("error encrypting message: %w", err)
+		return fmt.Errorf("error encrypting: %w", err)
 	}
+
+	log.Printf("🔐 Message encrypted")
+
 	encryptedMessageBase64 := base64.StdEncoding.EncodeToString(encryptedBytes)
-	log.Printf("✅ Step 6: Message encrypted successfully (length: %d bytes)", len(encryptedBytes))
+	ivHex := hex.EncodeToString(iv)
 
-	// Step 7: Save to log
-	err = saveEncryptedDataToLog(userWalletAddress.Hex(), phoneNumber, encryptedMessageBase64, ephemeralPubKeyHex, ivHex)
-	if err != nil {
-		log.Printf("⚠️ Warning: Could not write file to log folder: %v", err)
-	}
-
-	// Step 8: Decode ephemeral public key to bytes for transaction
-	ephemeralPubKeyBytes, err := hex.DecodeString(ephemeralPubKeyHex)
-	if err != nil {
-		return fmt.Errorf("error decoding ephemeral public key: %w", err)
-	}
-
-	// Step 9-13: Pack data
-	completeAuthData := packData(parsedABI, "completeAuthentication", phoneNumber, encryptedBytes, ephemeralPubKeyBytes)
-	log.Printf("📦 Step 13: Data packed successfully")
-
-	// Step 14-15: Send transaction
-	relatedAddress := []common.Address{}
-	maxGas := uint64(5_000_000_000)
-	maxGasPrice := uint64(1_000_000_000)
-	timeUse := uint64(0)
-
-	callData := transaction.NewCallData(completeAuthData)
-	bData, err := callData.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal calldata failed: %w", err)
-	}
-
-	log.Println("🔄 Sending completeAuthentication transaction...")
-
-	receipt, err := client.SendTransactionWithDeviceKey(
-		fromAddress,
-		contractAddress,
-		big.NewInt(0),
-		bData,
-		relatedAddress,
-		maxGas,
-		maxGasPrice,
-		timeUse,
+	// ============================================================
+	// 💾 Save to log file
+	// ============================================================
+	err = saveEncryptedDataToLog(
+		userWalletAddress.Hex(),
+		phoneNumber,
+		encryptedMessageBase64,
+		ephemeralPubKeyHex,
+		ivHex,
 	)
 	if err != nil {
-		return fmt.Errorf("transaction failed: %w", err)
+		log.Printf("⚠️ Could not save log: %v", err)
 	}
 
-	log.Printf("📝 Transaction receipt status: %v", receipt.Status())
-
-	if receipt.Status() != pb.RECEIPT_STATUS_RETURNED {
-		return fmt.Errorf("transaction failed with status: %v", receipt.Status())
+	// ============================================================
+	// 🔑 Setup transactor for completeAuthentication
+	// ============================================================
+	publicKeyECDSA := privateKey.Public().(*ecdsa.PublicKey)
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+	
+	chainID := big.NewInt(991)
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainID)
+	if err != nil {
+		return fmt.Errorf("failed to create transactor: %w", err)
 	}
 
-	log.Printf("✅ Step 15: completeAuthentication transaction sent successfully!")
+	auth.From = fromAddress
+	auth.Value = big.NewInt(0)
+	auth.GasLimit = uint64(5_000_000)
+	auth.GasPrice = big.NewInt(1_000_000_000)
+
+	// ============================================================
+	// 📤 Send completeAuthentication transaction
+	// ============================================================
+	log.Printf("📤 Sending completeAuthentication...")
+	
+	tx, err := instance.CompleteAuthentication(
+		auth,
+		phoneNumber,
+		encryptedBytes,
+		ephemeralPubKey,
+	)
+	
+	if err != nil {
+		return fmt.Errorf("completeAuth tx failed: %w", err)
+	}
+
+	log.Printf("📝 Tx hash: %s", tx.Hash().Hex())
+
+	// ============================================================
+	// ⏳ Wait for confirmation
+	// ============================================================
+	ctxTimeout, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	receipt, err := bind.WaitMined(ctxTimeout, client, tx)
+	if err != nil {
+		return fmt.Errorf("wait mined failed: %w", err)
+	}
+
+	if receipt.Status != 1 {
+		return fmt.Errorf("completeAuth failed with status: %d", receipt.Status)
+	}
+
+	log.Printf("✅ completeAuthentication SUCCESS")
+	log.Printf("═══════════════════════════════════════")
+	
 	return nil
 }
-// func CheckOTP(fromAddress common.Address ,client *client.Client,contractAddress string, contractABI string, RPC_HTTP_URL string, phoneNumber string, OTP string, botID string) {
-// 	parsedABI, err := abi.JSON(strings.NewReader(contractABI))
-// 	if err != nil {
-// 		fmt.Printf("❌ Failed to parse ABI: %v\n", err)
-// 		return
-// 	}
 
-// 	uintOtp, err := utils.StringToUint256(OTP)
-// 	if err != nil {
-// 		fmt.Printf("❌ Error converting OTP to uint256: %v\n", err)
-// 		return
-// 	}
+// ============================================================================
+// 💾 SAVE LOG
+// ============================================================================
 
-// 	verifyOTPData, err := parsedABI.Pack("validateOTP", uintOtp, phoneNumber)
-// 	if err != nil {
-// 		fmt.Printf("❌ Failed to pack ABI: %v\n", err)
-// 		return
-// 	}
-
-// 	toAddress := common.HexToAddress(contractAddress)
-
-// 	// fromAddress := common.HexToAddress("0xa620249dc17f23887226506b3eb260f4802a7efc") // Replace with actual address
-// 	relatedAddress := []common.Address{}
-// 	maxGas := uint64(5_000_000_000)
-// 	maxGasPrice := uint64(1_000_000_000)
-// 	timeUse := uint64(0)
-
-// 	// Step 15: Send transaction
-// 		callData := transaction.NewCallData(verifyOTPData)
-
-// 		bData, err := callData.Marshal()
-// 		if err != nil {
-// 			logger.Error(fmt.Sprintf("Marshal calldata for %s failed", "verifyOTP"), err)
-// 		}
-
-
-// 		receipt, err := client.SendTransactionWithDeviceKey(
-// 			fromAddress,
-// 			toAddress,
-// 			big.NewInt(0),
-// 			bData,
-// 			relatedAddress,
-// 			maxGas,
-// 			maxGasPrice,
-// 			timeUse,
-// 		)
-// 		if err !=nil {
-// 			logger.Error("Error:",err)
-// 		}
-// 		fmt.Println("aaaaaaaaa")
-// 		if receipt.Status() == pb.RECEIPT_STATUS_RETURNED {
-// 				log.Printf("✅ Step 15: Transaction sent successfully! ", )
-// 			var decodedResult ValidateOTPResult
-// 			err = parsedABI.UnpackIntoInterface(&decodedResult, "validateOTP", receipt.Return())
-// 			if err != nil {
-// 				fmt.Printf("❌ Failed to unpack result: %v\n", err)
-// 			} else {
-// 				fmt.Printf("✅ Decoded PublicKey: %s\n", decodedResult.PublicKey)
-// 				fmt.Printf("✅ Decoded Wallet Address: %s\n", decodedResult.Wallet.Hex())
-// 				if(botID == "email"){
-// 					CallCompleteAuthentication(fromAddress,client, parsedABI, toAddress, phoneNumber, decodedResult.PublicKey, "72a147b91248b0396f34d2cebf5d9817336163f944d87bf40e66cddd06bddf0e", decodedResult.Wallet)
-
-// 				}
-// 			}
-
-// 		}
-
-// }
-
-// func CallCompleteAuthentication(fromAddress common.Address ,client *client.Client, parsedABI abi.ABI, contractAddress common.Address, phoneNumber, publicKey, privateKeyHex string, userWalletAddress common.Address) {
-// 	// Step 1: Create message
-// 	message := fmt.Sprintf("Wallet address: %s is authorized", userWalletAddress.Hex())
-// 	log.Printf("📝 Step 1: Created message: %s", message)
-
-// 	// Step 2: Generate ephemeral key pair
-// 	ephemeralPrivKey, err := crypto.GenerateKey()
-// 	if err != nil {
-// 		log.Printf("❌ Step 2: Error generating ephemeral key: %v\n", err)
-// 		return
-// 	}
-
-// 	ephemeralPubKey := crypto.FromECDSAPub(&ephemeralPrivKey.PublicKey)
-// 	ephemeralPubKeyHex := hex.EncodeToString(ephemeralPubKey)
-// 	ephemeralPrivKeyBytes := crypto.FromECDSA(ephemeralPrivKey)
-
-// 	log.Printf("🔑 Step 2: Generated ephemeral key pair")
-// 	log.Printf("   - Ephemeral public key: %s", ephemeralPubKeyHex)
-
-// 	// Step 3: Decode user's public key
-// 	userPubKeyBytes, err := hex.DecodeString(strings.TrimPrefix(publicKey, "0x"))
-// 	if err != nil {
-// 		log.Printf("❌ Step 3: Error decoding user public key: %v\n", err)
-// 		return
-// 	}
-// 	log.Printf("🔍 Step 3: Decoded user public key (length: %d bytes)", len(userPubKeyBytes))
-
-// 	// Step 4: Calculate shared secret using ECDH
-// 	log.Printf("🔐 Step 4: Calculating ECDH shared secret...")
-// 	sharedSecretHex, err := utils.ECDHSharedSecretHex(ephemeralPrivKeyBytes, userPubKeyBytes)
-// 	if err != nil {
-// 		log.Printf("❌ Step 4: Error calculating ECDH shared secret: %v\n", err)
-// 		return
-// 	}
-
-// 	sharedSecretBytes, err := hex.DecodeString(sharedSecretHex)
-// 	if err != nil {
-// 		log.Printf("❌ Step 4: Error decoding shared secret: %v\n", err)
-// 		return
-// 	}
-// 	log.Printf("✅ Step 4: Shared secret calculated (length: %d bytes)", len(sharedSecretBytes))
-
-// 	// Step 5: Generate random IV for AES-CBC
-// 	iv := make([]byte, 16) // AES block size is 16 bytes
-// 	if _, err := rand.Read(iv); err != nil {
-// 		log.Printf("❌ Step 5: Error generating IV: %v\n", err)
-// 		return
-// 	}
-// 	ivHex := hex.EncodeToString(iv)
-// 	log.Printf("🎲 Step 5: Generated IV: %s", ivHex)
-
-// 	// Step 6: Encrypt message using AES-CBC
-// 	log.Printf("🔐 Step 6: Encrypting message with AES-CBC...")
-// 	encryptedBytes, err := utils.EncryptAESCBC(sharedSecretBytes, []byte(message), iv)
-// 	if err != nil {
-// 		log.Printf("❌ Step 6: Error encrypting message: %v\n", err)
-// 		return
-// 	}
-// 	encryptedMessageBase64 := base64.StdEncoding.EncodeToString(encryptedBytes)
-// 	log.Printf("✅ Step 6: Message encrypted successfully (length: %d bytes)", len(encryptedBytes))
-
-// 	// Step 7: Save to log
-// 	err = saveEncryptedDataToLog(userWalletAddress.Hex(), phoneNumber, encryptedMessageBase64, ephemeralPubKeyHex, ivHex)
-// 	if err != nil {
-// 		log.Printf("⚠️ Warning: Could not write file to log folder: %v", err)
-// 	}
-
-// 	// Step 8: Decode ephemeral public key to bytes for transaction
-// 	ephemeralPubKeyBytes, err := hex.DecodeString(ephemeralPubKeyHex)
-// 	if err != nil {
-// 		log.Printf("❌ Step 8: Error decoding ephemeral public key: %v\n", err)
-// 		return
-// 	}
-
-// 	// Step 9: Load server private key
-// 	privateKey, err := crypto.HexToECDSA(privateKeyHex)
-// 	if err != nil {
-// 		log.Printf("❌ Step 9: Error loading private key: %v", err)
-// 		return
-// 	}
-// 	senderAddress := crypto.PubkeyToAddress(*privateKey.Public().(*ecdsa.PublicKey))
-// 	log.Printf("📤 Step 9: Sender address: %s", senderAddress.Hex())
-
-// 	// Step 10: Get nonce
-
-// 	// Step 13: Pack data for completeAuthentication
-// 	// Smart contract function signature:
-// 	// completeAuthentication(string memory phoneNumber, bytes memory encryptedMessage, bytes memory ephemeralPublicKey, bytes memory iv)
-// 	completeAuthData := packData(parsedABI, "completeAuthentication", phoneNumber, encryptedBytes, ephemeralPubKeyBytes)
-// 	log.Printf("📦 Step 13: Data packed successfully")
-
-// 	log.Printf("✍️ Step 14: Transaction signed successfully")
-// 	// fromAddress := common.HexToAddress("0xa620249dc17f23887226506b3eb260f4802a7efc") // Replace with actual address
-// 	relatedAddress := []common.Address{}
-// 	maxGas := uint64(5_000_000_000)
-// 	maxGasPrice := uint64(1_000_000_000)
-// 	timeUse := uint64(0)
-
-// 	// Step 15: Send transaction
-// 		callData := transaction.NewCallData(completeAuthData)
-
-// 		bData, err := callData.Marshal()
-// 		if err != nil {
-// 			logger.Error(fmt.Sprintf("Marshal calldata for %s failed", "migrateCode"), err)
-// 		}
-
-
-// 		receipt, err := client.SendTransactionWithDeviceKey(
-// 			fromAddress,
-// 			contractAddress,
-// 			big.NewInt(0),
-// 			bData,
-// 			relatedAddress,
-// 			maxGas,
-// 			maxGasPrice,
-// 			timeUse,
-// 		)
-// 		if receipt.Status() == pb.RECEIPT_STATUS_RETURNED {
-// 				log.Printf("✅ Step 15: Transaction sent successfully! ", )
-
-// 		}
-
-// }
-
-func packData(parsedABI abi.ABI, method string, args ...interface{}) []byte {
-	data, err := parsedABI.Pack(method, args...)
-	if err != nil {
-		log.Fatalf("Fatal: Failed to pack data for %s: %v", method, err)
-	}
-	return data
-}
-
-func saveEncryptedDataToLog(userWalletAddress, phoneNumber, encryptedMessage, ephemeralPubKey, iv string) error {
+func saveEncryptedDataToLog(
+	userWalletAddress string,
+	phoneNumber string,
+	encryptedMessage string,
+	ephemeralPubKey string,
+	iv string,
+) error {
 	logDir := "log"
 	if _, err := os.Stat(logDir); os.IsNotExist(err) {
-		err = os.Mkdir(logDir, 0755)
-		if err != nil {
-			return fmt.Errorf("failed to create log directory: %w", err)
+		if err := os.Mkdir(logDir, 0755); err != nil {
+			return err
 		}
 	}
 
@@ -462,24 +454,11 @@ func saveEncryptedDataToLog(userWalletAddress, phoneNumber, encryptedMessage, ep
 
 	fileContent, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal log data to JSON: %w", err)
+		return err
 	}
 
 	fileName := fmt.Sprintf("%s_%s.json", userWalletAddress, time.Now().Format("20060102150405"))
 	filePath := filepath.Join(logDir, fileName)
 
-	err = os.WriteFile(filePath, fileContent, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write to log file: %w", err)
-	}
-
-	log.Printf("💾 Saved encrypted data to: %s", filePath)
-	return nil
-}
-
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
+	return os.WriteFile(filePath, fileContent, 0644)
 }

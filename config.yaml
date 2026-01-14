@@ -11,7 +11,7 @@ StorageConnectionAddress: "storage"
 
 AdminAddress: "3559d5c1af36faf5cb1dd1587b3c5f93b4c83508"
 PrivateKeyAdmin : "72b39b431b74fdfc30a1b5adc5eeb9cc37abe0ca0794d68c4ee57f7d4837cb26"
-AuthAddress: "0x9DD2b3aA837569052D5B427D755195b4179F9Cec"
+AuthAddress: "0x85FfcB0c7c7d21B8b6C5b38bDcaD63f9215e9Be8"
 
 AuthAbiPath: "./auth.abi"
 RpcURL: "https://rpc-proxy-sequoia.iqnb.com:8446"
